@@ -10,6 +10,7 @@ from tkinter import (
     Button,
     Checkbutton,
     Canvas,
+    Entry,
     Frame,
     IntVar,
     Label,
@@ -17,6 +18,7 @@ from tkinter import (
     Scale,
     StringVar,
     Tk,
+    Toplevel,
     filedialog,
     messagebox,
 )
@@ -24,9 +26,16 @@ from tkinter import HORIZONTAL, LEFT, RIGHT, TOP, BOTH, X, Y
 
 from PIL import Image, ImageEnhance, ImageOps, ImageTk
 
+if __package__:
+    from .batch_export import BatchSession, save_batch_image
+else:
+    from batch_export import BatchSession, save_batch_image
+
 
 DEFAULT_OUTPUT_SIZE = 160
 CANVAS_SIZE = 520
+PREVIEW_SIZE = 280
+IMAGE_TYPES = [("Imágenes", "*.png *.jpg *.jpeg *.bmp *.webp"), ("Todos los archivos", "*.*")]
 INK_WHITE = (255, 255, 255)
 INK_BLACK = (0, 0, 0)
 INK_RED = (196, 24, 32)
@@ -43,7 +52,7 @@ class Foto2InkApp:
     def __init__(self) -> None:
         self.root = Tk()
         self.root.title("foto2ink - conversor e-paper")
-        self.root.minsize(940, 650)
+        self.root.minsize(1000, 790)
 
         self.source_path: Path | None = None
         self.source: Image.Image | None = None
@@ -55,12 +64,20 @@ class Foto2InkApp:
         self.display_offset = (0, 0)
         self.drag_start: tuple[int, int] | None = None
         self.drag_crop_start: tuple[float, float] | None = None
+        self.batch: BatchSession | None = None
+        self.last_output_dir: Path | None = None
+        self.batch_busy = False
+        self.preview_job: str | None = None
+        self._cached_key: tuple | None = None
+        self._cached_ink: Image.Image | None = None
 
         self.status = StringVar(value="Abre una foto para empezar.")
         self.remove_bg = BooleanVar(value=False)
         self.crop_percent = StringVar(value="80")
         self.render_mode = StringVar(value="Detallado")
         self.output_size = IntVar(value=DEFAULT_OUTPUT_SIZE)
+        self.batch_progress = StringVar()
+        self.batch_destination = StringVar()
 
         self._build_ui()
         self._bind_events()
@@ -69,12 +86,16 @@ class Foto2InkApp:
         top = Frame(self.root, padx=12, pady=10)
         top.pack(side=TOP, fill=X)
 
-        Button(top, text="Abrir foto", command=self.open_image, width=14).pack(side=LEFT)
-        Button(top, text="Exportar", command=self.export_output, width=14).pack(side=LEFT, padx=(8, 0))
-        Checkbutton(top, text="Borrar fondo", variable=self.remove_bg, command=self.update_preview).pack(side=LEFT, padx=(18, 0))
+        actions = Frame(top)
+        actions.pack(fill=X, pady=(0, 6))
+        Button(actions, text="Abrir foto", command=self.open_image, width=14).pack(side=LEFT)
+        self.export_button = Button(actions, text="Exportar", command=self.export_output, width=14)
+        self.export_button.pack(side=LEFT, padx=(8, 0))
+        Button(actions, text="Procesar varias fotos…", command=self.open_batch, width=23).pack(side=LEFT, padx=(8, 0))
+        Checkbutton(top, text="Borrar fondo", variable=self.remove_bg, command=self.request_preview).pack(side=LEFT)
 
         Label(top, text="Potencia fondo").pack(side=LEFT, padx=(18, 4))
-        self.bg_strength = Scale(top, from_=0, to=100, orient=HORIZONTAL, length=170, command=lambda _v: self.update_preview())
+        self.bg_strength = Scale(top, from_=0, to=100, orient=HORIZONTAL, length=170, command=lambda _v: self.request_preview())
         self.bg_strength.set(45)
         self.bg_strength.pack(side=LEFT)
 
@@ -83,7 +104,19 @@ class Foto2InkApp:
         self.crop_scale.set(80)
         self.crop_scale.pack(side=LEFT)
 
+        self.batch_bar = Frame(self.root, padx=12, pady=5)
+        batch_actions = Frame(self.batch_bar)
+        batch_actions.pack(fill=X)
+        Label(batch_actions, textvariable=self.batch_progress, anchor="w", wraplength=520, justify=LEFT).pack(side=LEFT, fill=X, expand=True)
+        self.done_button = Button(batch_actions, text="Listo → siguiente", command=self.batch_done, bg="#c41820", fg="white", padx=12)
+        self.done_button.pack(side=LEFT, padx=6)
+        self.skip_button = Button(batch_actions, text="Saltar foto", command=self.batch_skip)
+        self.skip_button.pack(side=LEFT, padx=6)
+        Button(batch_actions, text="Cerrar lote", command=self.close_batch).pack(side=LEFT, padx=6)
+        Label(self.batch_bar, textvariable=self.batch_destination, anchor="w", wraplength=950).pack(fill=X, pady=(3, 0))
+
         main = Frame(self.root, padx=12, pady=6)
+        self.main_frame = main
         main.pack(fill=BOTH, expand=True)
 
         left_panel = Frame(main)
@@ -95,19 +128,19 @@ class Foto2InkApp:
         right_panel = Frame(main, padx=14)
         right_panel.pack(side=RIGHT, fill=Y)
         Label(right_panel, text="Preview e-paper").pack(anchor="w")
-        self.preview_canvas = Canvas(right_panel, width=320, height=320, bg="#ffffff", highlightthickness=1, highlightbackground="#bbbbbb")
+        self.preview_canvas = Canvas(right_panel, width=PREVIEW_SIZE, height=PREVIEW_SIZE, bg="#ffffff", highlightthickness=1, highlightbackground="#bbbbbb")
         self.preview_canvas.pack(pady=(6, 12))
 
         Label(right_panel, text="Salida cuadrada px").pack(anchor="w")
-        self.output_scale = Scale(right_panel, from_=64, to=240, orient=HORIZONTAL, length=260, variable=self.output_size, command=lambda _v: self.update_preview())
+        self.output_scale = Scale(right_panel, from_=64, to=240, orient=HORIZONTAL, length=260, variable=self.output_size, command=lambda _v: self.request_preview())
         self.output_scale.set(DEFAULT_OUTPUT_SIZE)
         self.output_scale.pack(anchor="w", pady=(0, 10))
 
         Label(right_panel, text="Modo de conversion").pack(anchor="w")
-        OptionMenu(right_panel, self.render_mode, "Detallado", "Sticker limpio", command=lambda _v: self.update_preview()).pack(fill=X, pady=(2, 10))
+        OptionMenu(right_panel, self.render_mode, "Detallado", "Sticker limpio", command=lambda _v: self.request_preview()).pack(fill=X, pady=(2, 10))
 
         Label(right_panel, text="Dither / detalle").pack(anchor="w")
-        self.detail_strength = Scale(right_panel, from_=0, to=100, orient=HORIZONTAL, length=260, command=lambda _v: self.update_preview())
+        self.detail_strength = Scale(right_panel, from_=0, to=100, orient=HORIZONTAL, length=260, command=lambda _v: self.request_preview())
         self.detail_strength.set(70)
         self.detail_strength.pack(anchor="w", pady=(0, 12))
 
@@ -115,9 +148,8 @@ class Foto2InkApp:
             "Controles:\n"
             "- Arrastra el cuadrado para mover el recorte.\n"
             "- Usa la barra de tamano para cambiar el area.\n"
-            "- Borrar fondo elimina zonas conectadas a los bordes.\n"
-            "- Detallado simula grises con puntos.\n"
-            "- Exportar crea PNG preview + binario .epd."
+            "- Exportar crea PNG preview + binario .epd.\n"
+            "- En lote: Ctrl+Enter guarda y pasa a la siguiente."
         )
         Label(right_panel, text=help_text, justify=LEFT, anchor="w").pack(fill=X)
 
@@ -129,36 +161,197 @@ class Foto2InkApp:
         self.canvas.bind("<ButtonPress-1>", self.on_mouse_down)
         self.canvas.bind("<B1-Motion>", self.on_mouse_drag)
         self.canvas.bind("<MouseWheel>", self.on_mouse_wheel)
+        self.root.bind("<Control-Return>", self._batch_shortcut)
+        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def run(self) -> None:
         self.root.mainloop()
 
     def open_image(self) -> None:
+        if self.batch_busy:
+            return
         path = filedialog.askopenfilename(
             title="Abrir foto",
-            filetypes=[
-                ("Imagenes", "*.png *.jpg *.jpeg *.bmp *.webp"),
-                ("Todos los archivos", "*.*"),
-            ],
+            parent=self.root,
+            filetypes=IMAGE_TYPES,
         )
         if not path:
             return
+        if not self._confirm_leave_batch():
+            return
+        self._clear_batch()
         try:
-            image = Image.open(path)
-            image = ImageOps.exif_transpose(image).convert("RGB")
+            self._load_image(Path(path), keep_crop_size=False)
         except Exception as exc:
             messagebox.showerror("No se pudo abrir", f"No se pudo abrir la imagen:\n{exc}")
-            return
 
-        self.source_path = Path(path)
+    def _load_image(self, path: Path, keep_crop_size: bool = True) -> None:
+        with Image.open(path) as original:
+            image = ImageOps.exif_transpose(original).convert("RGB")
+        self.source_path = path
         self.source = image
+        self.drag_start = self.drag_crop_start = None
+        self._cached_key = self._cached_ink = None
         self._fit_image_to_canvas()
-        side = min(image.size) * 0.8
+        percent = float(self.crop_scale.get()) if keep_crop_size else 80
+        side = min(image.size) * percent / 100
         self.crop = CropBox((image.width - side) / 2, (image.height - side) / 2, side)
-        self.crop_scale.set(80)
+        self.crop_scale.set(percent)
         self.status.set(f"Imagen abierta: {self.source_path.name}")
         self.redraw()
         self.update_preview()
+
+    def _confirm_leave_batch(self) -> bool:
+        return self.batch is None or self.batch.current is None or messagebox.askyesno(
+            "Cerrar lote", "Quedan fotos sin guardar. ¿Cerrar el lote?\nLas ya guardadas se conservarán.", parent=self.root)
+
+    def _clear_batch(self) -> None:
+        self.batch = None
+        self.batch_bar.pack_forget()
+        self.export_button.config(state="normal")
+
+    def open_batch(self) -> None:
+        if self.batch_busy:
+            return
+        paths = filedialog.askopenfilenames(title="Seleccionar fotos del lote", parent=self.root, filetypes=IMAGE_TYPES)
+        if not paths:
+            return
+        dialog = Toplevel(self.root)
+        dialog.title("Preparar lote")
+        dialog.transient(self.root)
+        dialog.resizable(False, False)
+        folder = StringVar(value=str(self.last_output_dir or ""))
+        size = StringVar(value=str(self.output_size.get()))
+        body = Frame(dialog, padx=18, pady=16)
+        body.pack(fill=BOTH, expand=True)
+        Label(body, text=f"{len(paths)} fotos seleccionadas · se revisarán una a una", anchor="w").pack(fill=X)
+        Label(body, text="Carpeta donde guardar los .epd y previews:", anchor="w").pack(fill=X, pady=(14, 3))
+        folder_row = Frame(body)
+        folder_row.pack(fill=X)
+        Entry(folder_row, textvariable=folder, width=64).pack(side=LEFT, fill=X, expand=True)
+
+        def browse() -> None:
+            chosen = filedialog.askdirectory(title="Carpeta de salida del lote", parent=dialog, initialdir=folder.get() or None)
+            if chosen:
+                folder.set(chosen)
+
+        Button(folder_row, text="Elegir…", command=browse).pack(side=LEFT, padx=(8, 0))
+        Label(body, text="Tamaño inicial de salida cuadrada (64–240 px):", anchor="w").pack(fill=X, pady=(14, 3))
+        size_entry = Entry(body, textvariable=size, width=10)
+        size_entry.pack(anchor="w")
+        Label(body, text="Podrás ajustar recorte, fondo, modo, detalle y tamaño en cada foto.\nLos ajustes se conservan para la siguiente. No se sobrescriben archivos.", justify=LEFT).pack(anchor="w", pady=12)
+
+        def start() -> None:
+            try:
+                pixels = int(size.get())
+                if not 64 <= pixels <= 240:
+                    raise ValueError("El tamaño debe estar entre 64 y 240 píxeles.")
+                if not folder.get().strip():
+                    raise ValueError("Elige primero la carpeta de salida.")
+                batch = BatchSession(tuple(Path(p) for p in paths), Path(folder.get()).expanduser())
+            except ValueError as exc:
+                messagebox.showerror("Revisa el lote", str(exc), parent=dialog)
+                return
+            if not self._confirm_leave_batch():
+                return
+            self.batch = batch
+            self.last_output_dir = batch.output_dir
+            self.output_size.set(pixels)
+            dialog.destroy()
+            self.batch_bar.pack(before=self.main_frame, fill=X)
+            self._load_batch_current()
+
+        buttons = Frame(body)
+        buttons.pack(fill=X)
+        Button(buttons, text="Cancelar", command=dialog.destroy).pack(side=RIGHT)
+        Button(buttons, text="Empezar lote", command=start, width=18).pack(side=RIGHT, padx=8)
+        dialog.bind("<Return>", lambda _event: start())
+        dialog.bind("<Escape>", lambda _event: dialog.destroy())
+        dialog.update_idletasks()
+        x = max(0, self.root.winfo_rootx() + (self.root.winfo_width() - dialog.winfo_reqwidth()) // 2)
+        y = max(0, self.root.winfo_rooty() + (self.root.winfo_height() - dialog.winfo_reqheight()) // 2)
+        dialog.geometry(f"+{x}+{y}")
+        dialog.grab_set()
+        size_entry.focus_set()
+
+    def _sync_batch_controls(self) -> None:
+        if self.batch is None:
+            return
+        batch = self.batch
+        total = len(batch.sources)
+        if batch.current is None:
+            self.batch_progress.set(f"Lote terminado · {len(batch.saved)} guardadas · {batch.skipped} omitidas")
+        else:
+            self.batch_progress.set(f"Foto {batch.index + 1}/{total} · {batch.current.name} · {len(batch.saved)} guardadas · {batch.skipped} omitidas")
+        self.batch_destination.set(f"Destino: {batch.output_dir}")
+        self.done_button.config(state="normal" if batch.current and self.source is not None and not self.batch_busy else "disabled")
+        self.skip_button.config(state="normal" if batch.current and not self.batch_busy else "disabled")
+        self.export_button.config(state="disabled" if batch.current else "normal")
+
+    def _load_batch_current(self) -> None:
+        if self.batch is None:
+            return
+        path = self.batch.current
+        if path is None:
+            self.status.set(f"Lote terminado. Archivos guardados en {self.batch.output_dir}")
+        else:
+            try:
+                self._load_image(path)
+            except Exception as exc:
+                # Nunca dejar exportable la foto anterior si la siguiente falla.
+                self.source = self.source_path = self.display_photo = None
+                self._cached_key = self._cached_ink = None
+                self.redraw()
+                self.update_preview()
+                self.status.set(f"No se pudo abrir {path.name}. Puedes saltarla.")
+                messagebox.showerror("No se pudo abrir", f"{path.name}\n{exc}\nPulsa «Saltar foto» para continuar.", parent=self.root)
+        self._sync_batch_controls()
+
+    def batch_done(self) -> None:
+        if self.batch_busy or self.batch is None or self.batch.current is None or self.source is None:
+            return
+        self.batch_busy = True
+        self._sync_batch_controls()
+        self.root.update_idletasks()
+        try:
+            ink = self.make_ink_image()
+            assert ink is not None
+            result = save_batch_image(self.batch.output_dir, self.batch.current, ink, epd_bytes(ink))
+            self.batch.advance(result)
+            self._load_batch_current()
+            if self.batch.current is None:
+                self.status.set(f"Lote terminado: {len(self.batch.saved)} guardadas en {self.batch.output_dir}")
+            elif self.source is not None:
+                self.status.set(f"Guardado: {result.epd.name} + {result.preview.name}")
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("No se pudo guardar", f"{exc}\nLa foto sigue pendiente. Puedes reintentar o saltarla.", parent=self.root)
+        finally:
+            # Consumir dobles clics pendientes antes de habilitar la foto nueva.
+            self.root.after(300, self._batch_unlock)
+
+    def _batch_unlock(self) -> None:
+        self.batch_busy = False
+        self._sync_batch_controls()
+
+    def batch_skip(self) -> None:
+        if self.batch_busy or self.batch is None or self.batch.current is None:
+            return
+        self.batch.advance()
+        self._load_batch_current()
+
+    def close_batch(self) -> None:
+        if not self.batch_busy and self._confirm_leave_batch():
+            self._clear_batch()
+            self.status.set("Lote cerrado. Las fotos guardadas se conservan.")
+
+    def _batch_shortcut(self, _event) -> str:
+        if self.root.grab_current() is None:
+            self.batch_done()
+        return "break"
+
+    def on_close(self) -> None:
+        if not self.batch_busy and self._confirm_leave_batch():
+            self.root.destroy()
 
     def _fit_image_to_canvas(self) -> None:
         if self.source is None:
@@ -214,7 +407,7 @@ class Foto2InkApp:
         self.crop.y = self.drag_crop_start[1] + dy
         self._clamp_crop()
         self.redraw()
-        self.update_preview()
+        self.request_preview()
 
     def on_mouse_wheel(self, event) -> None:
         if self.source is None:
@@ -234,7 +427,7 @@ class Foto2InkApp:
         self.crop = CropBox(old_cx - new_size / 2, old_cy - new_size / 2, new_size)
         self._clamp_crop()
         self.redraw()
-        self.update_preview()
+        self.request_preview()
 
     def _clamp_crop(self) -> None:
         if self.source is None:
@@ -252,16 +445,22 @@ class Foto2InkApp:
             int(round(self.crop.x + self.crop.size)),
             int(round(self.crop.y + self.crop.size)),
         )
+        key = (id(self.source), box, int(self.output_size.get()), self.remove_bg.get(),
+               self.render_mode.get(), self.bg_strength.get(), self.detail_strength.get())
+        if key == self._cached_key:
+            return self._cached_ink
         crop = self.source.crop(box)
         size = int(self.output_size.get())
         crop = crop.resize((size, size), Image.Resampling.LANCZOS).convert("RGB")
         bg_mask = self._background_mask(crop) if self.remove_bg.get() else None
-        return quantize_to_ink(
+        ink = quantize_to_ink(
             crop,
             bg_mask,
             mode=self.render_mode.get(),
             dither_strength=self.detail_strength.get() / 100.0,
         )
+        self._cached_key, self._cached_ink = key, ink
+        return ink
 
     def _background_mask(self, image: Image.Image) -> set[tuple[int, int]]:
         pixels = image.load()
@@ -299,18 +498,28 @@ class Foto2InkApp:
             queue.append((x, y - 1))
         return visited
 
+    def request_preview(self) -> None:
+        if self.preview_job is not None:
+            self.root.after_cancel(self.preview_job)
+        self.preview_job = self.root.after(100, self.update_preview)
+
     def update_preview(self) -> None:
+        if self.preview_job is not None:
+            self.root.after_cancel(self.preview_job)
+            self.preview_job = None
         ink = self.make_ink_image()
         self.preview_canvas.delete("all")
         if ink is None:
-            self.preview_canvas.create_text(160, 160, text="Sin preview", fill="#666666")
+            self.preview_canvas.create_text(PREVIEW_SIZE // 2, PREVIEW_SIZE // 2, text="Sin preview", fill="#666666")
             return
-        preview = ink.resize((320, 320), Image.Resampling.NEAREST)
+        preview = ink.resize((PREVIEW_SIZE, PREVIEW_SIZE), Image.Resampling.NEAREST)
         self.preview_photo = ImageTk.PhotoImage(preview)
         self.preview_canvas.create_image(0, 0, anchor="nw", image=self.preview_photo)
-        self.preview_canvas.create_rectangle(0, 0, 319, 319, outline="#cfcfcf")
+        self.preview_canvas.create_rectangle(0, 0, PREVIEW_SIZE - 1, PREVIEW_SIZE - 1, outline="#cfcfcf")
 
     def export_output(self) -> None:
+        if self.batch_busy or (self.batch is not None and self.batch.current is not None):
+            return
         ink = self.make_ink_image()
         if ink is None:
             messagebox.showinfo("Sin imagen", "Abre una foto antes de exportar.")
@@ -332,9 +541,13 @@ class Foto2InkApp:
             return
 
         out_path = Path(path)
-        write_epd(out_path, ink)
         preview_path = out_path.with_name(out_path.stem + "_preview.png")
-        ink.save(preview_path)
+        try:
+            write_epd(out_path, ink)
+            ink.save(preview_path)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("No se pudo exportar", str(exc), parent=self.root)
+            return
         self.status.set(f"Exportado: {out_path.name} + {preview_path.name}")
         messagebox.showinfo("Exportado", f"Guardado:\n{out_path}\n{preview_path}")
 
@@ -513,13 +726,17 @@ def pack_plane(image: Image.Image, color: tuple[int, int, int]) -> bytes:
     return bytes(data)
 
 
-def write_epd(path: Path, image: Image.Image) -> None:
+def epd_bytes(image: Image.Image) -> bytes:
     if image.width != image.height:
         raise ValueError("La imagen debe ser cuadrada")
     black = pack_plane(image, INK_BLACK)
     red = pack_plane(image, INK_RED)
     header = b"INK3" + struct.pack("<BHH", 1, image.width, image.height)
-    path.write_bytes(header + black + red)
+    return header + black + red
+
+
+def write_epd(path: Path, image: Image.Image) -> None:
+    path.write_bytes(epd_bytes(image))
 
 
 if __name__ == "__main__":

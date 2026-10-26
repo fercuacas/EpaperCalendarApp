@@ -18,6 +18,7 @@ import androidx.compose.ui.geometry.*
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.*
 import androidx.compose.ui.text.style.*
@@ -32,154 +33,92 @@ import kotlinx.coroutines.delay
 internal fun AgendaSection(
     state: CalendarState,
     onEventClick: (CalendarEvent) -> Unit,
-    onQuickCreate: (QuickEventTemplate) -> Unit
+    onQuickCreate: (QuickEventTemplate) -> Unit,
+    onCreate: () -> Unit,
+    personalContentEnabled: Boolean = true
 ) {
     val allDayEvents = state.allDayEventsFor(state.selectedDate)
     val timedEvents = state.timedEventsFor(state.selectedDate)
     val dayEvents = allDayEvents + timedEvents
 
-    SummaryPanel(
-        selectedDate = state.selectedDate,
-        eventCount = dayEvents.size,
-        quickEvents = dayEvents.take(3)
-    )
+    SummaryPanel(taskCount = dayEvents.count { it.category == EventCategory.TASK && !it.done },
+        personalContentEnabled = personalContentEnabled, selectedDate = state.selectedDate)
     Spacer(modifier = Modifier.height(14.dp))
     AgendaPanel(
+        date = state.selectedDate,
         title = smartDayHeader(state.selectedDate),
         allDayEvents = allDayEvents,
         events = timedEvents,
         onEventClick = onEventClick,
-        onQuickCreate = onQuickCreate
+        onQuickCreate = onQuickCreate,
+        onCreate = onCreate
     )
 }
 
 @Composable
 internal fun SummaryPanel(
-    selectedDate: LocalDate,
-    eventCount: Int,
-    quickEvents: List<CalendarEvent>
+    taskCount: Int,
+    personalContentEnabled: Boolean = true,
+    selectedDate: LocalDate = LocalDate.now()
+) {
+    SummaryPanelContent(taskCount, rememberPersonalDayContent(selectedDate, personalContentEnabled))
+}
+
+@Composable
+internal fun SummaryPanelContent(
+    taskCount: Int,
+    content: PersonalDayUi
 ) {
     val palette = LocalCalendarPalette.current
+    val shape = RoundedCornerShape(24.dp)
 
     Surface(
-        shape = RoundedCornerShape(8.dp),
-        color = palette.surface.copy(alpha = 0.78f),
+        shape = shape,
+        color = palette.surface,
         modifier = Modifier
             .fillMaxWidth()
-            .shadow(10.dp, RoundedCornerShape(8.dp), ambientColor = palette.accent.copy(alpha = 0.12f)),
+            .testTag("agenda_summary")
+            .shadow(4.dp, shape, ambientColor = palette.accent.copy(alpha = 0.10f)),
         tonalElevation = 0.dp
     ) {
-        Box(modifier = Modifier.fillMaxWidth()) {
-            HomeIllustration(
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 10.dp, top = 8.dp)
-                    .size(width = 168.dp, height = 136.dp)
-            )
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 22.dp, top = 22.dp, end = 138.dp, bottom = 20.dp)
+        Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(
-                        text = greetingForNow(),
+                        text = content.phrase,
+                        modifier = Modifier.testTag("personal_daily_phrase"),
                         color = palette.text,
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = 24.sp,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
+                        fontSize = 20.sp,
+                        lineHeight = 26.sp
                     )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Icon(
-                        imageVector = Icons.Rounded.WbSunny,
-                        contentDescription = null,
-                        tint = palette.sun,
-                        modifier = Modifier.size(25.dp)
+                    Text(
+                        text = if (taskCount == 1) "1 tarea pendiente" else "$taskCount tareas pendientes",
+                        color = palette.textMuted,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 14.sp,
+                        lineHeight = 19.sp
                     )
                 }
-                Spacer(modifier = Modifier.height(6.dp))
-                Text(
-                    text = if (eventCount == 1) {
-                        "Tienes 1 evento hoy"
-                    } else {
-                        "Tienes $eventCount eventos hoy"
-                    },
-                    color = palette.textMuted.copy(alpha = 0.78f),
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 17.sp
-                )
-                Spacer(modifier = Modifier.height(26.dp))
-                Row(
-                    modifier = Modifier.horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    if (quickEvents.isEmpty()) {
-                        QuickEventChip(
-                            title = "Día libre",
-                            time = selectedDate.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.getDefault()),
-                            color = Color(0xFF4BAA7D)
-                        )
-                    } else {
-                        quickEvents.forEach { event ->
-                            QuickEventChip(
-                                title = event.title,
-                                time = event.startLabel,
-                                color = Color(event.category.accentColor)
-                            )
-                        }
-                    }
-                }
+                PersonalContentImage(content, Modifier.size(104.dp))
             }
         }
     }
 }
 
 @Composable
-internal fun QuickEventChip(
-    title: String,
-    time: String,
-    color: Color
-) {
-    val palette = LocalCalendarPalette.current
-
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
-            .background(palette.surfaceStrong.copy(alpha = 0.72f))
-            .border(1.dp, color.copy(alpha = 0.18f), RoundedCornerShape(8.dp))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        CategoryDot(color = color, size = 30.dp)
-        Spacer(modifier = Modifier.width(10.dp))
-        Column {
-            Text(
-                text = title,
-                color = palette.text,
-                fontWeight = FontWeight.Bold,
-                fontSize = 15.sp,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.width(112.dp)
-            )
-            Text(
-                text = time,
-                color = palette.textMuted.copy(alpha = 0.82f),
-                fontWeight = FontWeight.Medium,
-                fontSize = 13.sp
-            )
-        }
-    }
-}
-
-@Composable
 internal fun AgendaPanel(
+    date: LocalDate,
     title: String,
     allDayEvents: List<CalendarEvent>,
     events: List<CalendarEvent>,
     onEventClick: (CalendarEvent) -> Unit,
-    onQuickCreate: (QuickEventTemplate) -> Unit
+    onQuickCreate: (QuickEventTemplate) -> Unit,
+    onCreate: () -> Unit
 ) {
     val palette = LocalCalendarPalette.current
 
@@ -201,30 +140,21 @@ internal fun AgendaPanel(
             Spacer(modifier = Modifier.height(18.dp))
             if (allDayEvents.isNotEmpty()) {
                 AllDayEventsSection(events = allDayEvents, onEventClick = onEventClick)
-                if (events.isNotEmpty()) {
-                    Spacer(modifier = Modifier.height(16.dp))
-                }
+                Spacer(modifier = Modifier.height(16.dp))
             }
             if (events.isEmpty() && allDayEvents.isEmpty()) {
                 UsefulEmptyState(
                     icon = Icons.Rounded.Event,
                     title = "Sin eventos",
-                    subtitle = "Empieza con una plantilla rápida.",
+                    subtitle = "Tu día está libre. Crea un evento o usa una plantilla.",
                     actions = quickEventTemplates.take(4),
-                    onQuickCreate = onQuickCreate
+                    onQuickCreate = onQuickCreate,
+                    primaryActionLabel = "Crear evento",
+                    onPrimaryAction = onCreate
                 )
-            } else if (events.isNotEmpty()) {
-                events.forEachIndexed { index, event ->
-                    TimelineEventRow(
-                        event = event,
-                        isCurrent = index == 0,
-                        onClick = { onEventClick(event) }
-                    )
-                    if (index != events.lastIndex) {
-                        Spacer(modifier = Modifier.height(14.dp))
-                    }
-                }
+                Spacer(modifier = Modifier.height(14.dp))
             }
+            DayTimeline(date = date, events = events, onEventClick = onEventClick)
         }
     }
 }
@@ -269,9 +199,10 @@ internal fun AllDayEventsSection(
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                    ImportedCalendarLabel(event)
                     Text(
                         text = if (event.spansMultipleDays) {
-                            "${event.date} - ${event.endDate}"
+                            "${formatShortDate(event.date)} - ${formatShortDate(event.endDate)}"
                         } else {
                             event.category.label
                         },
@@ -283,50 +214,6 @@ internal fun AllDayEventsSection(
                 }
             }
         }
-    }
-}
-
-@Composable
-internal fun TimelineEventRow(
-    event: CalendarEvent,
-    isCurrent: Boolean,
-    onClick: () -> Unit
-) {
-    val palette = LocalCalendarPalette.current
-
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Column(
-            modifier = Modifier.width(72.dp),
-            horizontalAlignment = Alignment.Start
-        ) {
-            Text(
-                text = event.startLabel,
-                color = if (isCurrent) palette.accent else palette.textMuted.copy(alpha = 0.76f),
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 17.sp
-            )
-            Text(
-                text = event.endLabel,
-                color = palette.textMuted.copy(alpha = 0.58f),
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 13.sp
-            )
-        }
-        Box(
-            modifier = Modifier
-                .size(9.dp)
-                .clip(CircleShape)
-                .background(if (isCurrent) palette.accent else palette.softLine)
-        )
-        Spacer(modifier = Modifier.width(12.dp))
-        EventCard(
-            event = event,
-            modifier = Modifier.weight(1f),
-            onClick = onClick
-        )
     }
 }
 
@@ -345,7 +232,7 @@ internal fun EventCard(
         shape = RoundedCornerShape(8.dp),
         color = if (compact) palette.surfaceStrong.copy(alpha = 0.68f) else soft.copy(alpha = 0.72f),
         modifier = modifier
-            .height(if (compact) 84.dp else 96.dp)
+            .height((if (compact) 84 else 96).dp + if (event.isReadOnly) 20.dp else 0.dp)
             .clickable(onClick = onClick)
             .border(1.dp, accent.copy(alpha = if (compact) 0.12f else 0.42f), RoundedCornerShape(8.dp)),
         tonalElevation = 0.dp
@@ -374,6 +261,7 @@ internal fun EventCard(
                     overflow = TextOverflow.Ellipsis,
                     textDecoration = if (event.done) TextDecoration.LineThrough else TextDecoration.None
                 )
+                ImportedCalendarLabel(event)
                 Spacer(modifier = Modifier.height(5.dp))
                 Text(
                     text = eventMetaLabelRich(event),
@@ -411,7 +299,14 @@ internal fun TasksSection(
 ) {
     val palette = LocalCalendarPalette.current
     val tasks = state.taskEvents()
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+    val pendingTasks = tasks.filterNot { it.done }
+    val completedTasks = tasks.filter { it.done }
+    var showCompleted by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier.tutorialTarget(TutorialFocusTarget.TASKS_VIEW),
+        verticalArrangement = Arrangement.spacedBy(14.dp)
+    ) {
         Surface(
             shape = RoundedCornerShape(8.dp),
             color = palette.surface.copy(alpha = 0.86f),
@@ -435,13 +330,59 @@ internal fun TasksSection(
                         onQuickCreate = onQuickCreate
                     )
                 } else {
-                    tasks.forEach { event ->
+                    Text(
+                        text = "Pendientes (${pendingTasks.size})",
+                        color = palette.text,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 15.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    if (pendingTasks.isEmpty()) {
+                        Text(
+                            text = "No tienes tareas pendientes.",
+                            color = palette.textMuted.copy(alpha = 0.84f),
+                            fontSize = 14.sp
+                        )
+                        Spacer(modifier = Modifier.height(10.dp))
+                    }
+                    pendingTasks.forEach { event ->
                         TaskRow(
                             event = event,
                             onToggleDone = { onToggleDone(event.id) },
                             onEventClick = { onEventClick(event) }
                         )
                         Spacer(modifier = Modifier.height(10.dp))
+                    }
+                    if (completedTasks.isNotEmpty()) {
+                        TextButton(
+                            onClick = { showCompleted = !showCompleted },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Icon(
+                                imageVector = if (showCompleted) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                                contentDescription = null
+                            )
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text(
+                                text = if (showCompleted) {
+                                    "Ocultar completadas"
+                                } else {
+                                    "Mostrar completadas (${completedTasks.size})"
+                                },
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        AnimatedVisibility(visible = showCompleted) {
+                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                                completedTasks.forEach { event ->
+                                    TaskRow(
+                                        event = event,
+                                        onToggleDone = { onToggleDone(event.id) },
+                                        onEventClick = { onEventClick(event) }
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -460,6 +401,7 @@ internal fun TaskRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .tutorialTarget(TutorialFocusTarget.TASK_ROW)
             .clip(RoundedCornerShape(8.dp))
             .background(palette.surfaceStrong.copy(alpha = 0.62f))
             .clickable(onClick = onEventClick)
@@ -468,8 +410,8 @@ internal fun TaskRow(
     ) {
         IconButton(onClick = onToggleDone, modifier = Modifier.size(38.dp)) {
             Icon(
-                imageVector = if (event.done) Icons.Rounded.Done else Icons.Rounded.CheckBox,
-                contentDescription = "Completar",
+                imageVector = if (event.done) Icons.Rounded.CheckCircle else Icons.Rounded.CheckBoxOutlineBlank,
+                contentDescription = if (event.done) "Marcar como pendiente" else "Marcar como completada",
                 tint = if (event.done) palette.success else palette.accent
             )
         }
@@ -482,11 +424,11 @@ internal fun TaskRow(
                 textDecoration = if (event.done) TextDecoration.LineThrough else TextDecoration.None
             )
             Text(
-                text = "${event.date} · ${event.startLabel}",
-                color = palette.textMuted.copy(alpha = 0.62f),
-                fontSize = 13.sp
+                text = "${formatShortDate(event.date)} · ${event.startLabel}",
+                color = palette.textMuted.copy(alpha = 0.82f),
+                fontSize = 14.sp
             )
         }
-        Icon(Icons.Rounded.Edit, contentDescription = null, tint = palette.textMuted.copy(alpha = 0.42f))
+        Icon(Icons.Rounded.Edit, contentDescription = "Editar tarea", tint = palette.textMuted.copy(alpha = 0.68f))
     }
 }

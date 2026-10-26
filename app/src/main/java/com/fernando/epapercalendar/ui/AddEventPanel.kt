@@ -50,7 +50,8 @@ internal fun AddEventPanel(
     onDismiss: () -> Unit,
     onSave: (EventDraft) -> Boolean,
     onSaveRecurring: (EventDraft, RecurrenceEditMode) -> Boolean,
-    onDelete: (String) -> Unit,
+    onDelete: (String, LocalDate?, RecurrenceDeleteMode) -> Boolean,
+    tutorialRevealAdvanced: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val palette = LocalCalendarPalette.current
@@ -66,19 +67,34 @@ internal fun AddEventPanel(
     var allDay by remember { mutableStateOf(false) }
     var recurrenceRule by remember { mutableStateOf(RecurrenceRule.NONE) }
     var customRepeatDaysText by remember { mutableStateOf("7") }
+    var customUsesWeekdays by remember { mutableStateOf(true) }
+    var customWeekDays by remember { mutableStateOf(setOf(selectedDate.dayOfWeek)) }
+    var deleteConfirmationVisible by remember { mutableStateOf(false) }
     var reminder by remember { mutableStateOf(ReminderOption.NONE) }
     var advancedVisible by remember { mutableStateOf(false) }
     var hasError by remember { mutableStateOf(false) }
     var datePickerTarget by remember { mutableStateOf<DateFieldTarget?>(null) }
     var timePickerVisible by remember { mutableStateOf(false) }
     var pendingRecurringDraft by remember { mutableStateOf<EventDraft?>(null) }
-    val parsedStartDate = runCatching { LocalDate.parse(dateText.trim()) }.getOrNull() ?: selectedDate
+    val parsedDate = runCatching { LocalDate.parse(dateText.trim()) }.getOrNull()
+    val parsedEndDate = runCatching { LocalDate.parse(endDateText.trim()) }.getOrNull()
+    val parsedStartMinutes = CalendarEvent.labelToMinutes(timeText.trim())
+    val parsedDurationMinutes = durationText.toIntOrNull()
+    val canSave = title.isNotBlank() &&
+        parsedDate != null &&
+        parsedEndDate != null &&
+        !parsedEndDate.isBefore(parsedDate) &&
+        (recurrenceRule != RecurrenceRule.CUSTOM || !customUsesWeekdays || customWeekDays.isNotEmpty()) &&
+        (allDay || (parsedStartMinutes != null && parsedDurationMinutes != null && parsedDurationMinutes > 0))
+    val parsedStartDate = parsedDate ?: selectedDate
     val isEditing = draft?.id != null
     val naturalSuggestion = remember(title, selectedDate, draft?.id) {
         if (draft == null) parseNaturalEvent(title, selectedDate) else null
     }
 
-    LaunchedEffect(visible, draft?.id, selectedDate) {
+    LaunchedEffect(visible, draft?.id, selectedDate, tutorialRevealAdvanced) {
+        deleteConfirmationVisible = false
+        pendingRecurringDraft = null
         if (visible) {
             val source = draft
             title = source?.title.orEmpty()
@@ -95,8 +111,10 @@ internal fun AddEventPanel(
             allDay = source?.allDay ?: false
             recurrenceRule = source?.recurrenceRule ?: RecurrenceRule.NONE
             customRepeatDaysText = (source?.customRepeatDays ?: 7).toString()
+            customUsesWeekdays = source?.recurrenceRule != RecurrenceRule.CUSTOM || source.customWeekDays.isNotEmpty()
+            customWeekDays = source?.customWeekDays?.takeIf { it.isNotEmpty() } ?: setOf((source?.date ?: selectedDate).dayOfWeek)
             reminder = source?.reminder ?: ReminderOption.NONE
-            advancedVisible = source?.hasAdvancedFields() == true
+            advancedVisible = tutorialRevealAdvanced || source?.hasAdvancedFields() == true
             hasError = false
         }
     }
@@ -123,7 +141,8 @@ internal fun AddEventPanel(
         } else {
             (startMinutes + durationMinutes).coerceAtMost(23 * 60 + 59)
         }
-        if (date == null || endDate == null || endDate.isBefore(date) || title.isBlank() || startMinutes < 0 || durationMinutes <= 0) {
+        if (date == null || endDate == null || endDate.isBefore(date) || title.isBlank() || startMinutes < 0 || durationMinutes <= 0 ||
+            (recurrenceRule == RecurrenceRule.CUSTOM && customUsesWeekdays && customWeekDays.isEmpty())) {
             hasError = true
             return null
         }
@@ -141,6 +160,7 @@ internal fun AddEventPanel(
             allDay = allDay,
             recurrenceRule = recurrenceRule,
             customRepeatDays = customRepeatDaysText.toIntOrNull()?.coerceAtLeast(1) ?: 7,
+            customWeekDays = if (recurrenceRule == RecurrenceRule.CUSTOM && customUsesWeekdays) customWeekDays else emptySet(),
             recurrenceEndDate = draft?.recurrenceEndDate,
             excludedDates = draft?.excludedDates.orEmpty(),
             reminder = reminder,
@@ -194,47 +214,54 @@ internal fun AddEventPanel(
             color = palette.surface.copy(alpha = 0.96f),
             modifier = Modifier
                 .fillMaxWidth()
-                .tutorialTarget(TutorialFocusTarget.ADD_PANEL)
+                .fillMaxHeight(0.96f)
+                .tutorialTarget(
+                    if (isEditing) TutorialFocusTarget.EDIT_PANEL else TutorialFocusTarget.ADD_PANEL
+                )
                 .shadow(16.dp, RoundedCornerShape(8.dp), ambientColor = palette.accent.copy(alpha = 0.2f)),
             tonalElevation = 0.dp
         ) {
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
+                    .fillMaxSize()
                     .imePadding()
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 22.dp, vertical = 16.dp)
             ) {
-                Box(
+                Column(
                     modifier = Modifier
-                        .align(Alignment.CenterHorizontally)
-                        .size(width = 78.dp, height = 6.dp)
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(palette.softLine)
-                )
-                Spacer(modifier = Modifier.height(14.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
+                        .weight(1f)
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 22.dp, vertical = 16.dp)
                 ) {
-                    Text(
-                        text = if (isEditing) "Editar evento" else "Crear evento",
-                        color = palette.text,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 28.sp,
-                        modifier = Modifier.weight(1f)
-                    )
-                    IconButton(
-                        onClick = onDismiss,
+                    Box(
                         modifier = Modifier
-                            .clip(CircleShape)
-                            .background(palette.surfaceStrong.copy(alpha = 0.54f))
+                            .align(Alignment.CenterHorizontally)
+                            .size(width = 78.dp, height = 6.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(palette.softLine)
+                    )
+                    Spacer(modifier = Modifier.height(14.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Rounded.Close, contentDescription = "Cerrar", tint = palette.textMuted.copy(alpha = 0.72f))
+                        Text(
+                            text = if (isEditing) "Editar evento" else "Crear evento",
+                            color = palette.text,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 28.sp,
+                            modifier = Modifier.weight(1f)
+                        )
+                        IconButton(
+                            onClick = onDismiss,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(palette.surfaceStrong.copy(alpha = 0.54f))
+                        ) {
+                            Icon(Icons.Rounded.Close, contentDescription = "Cerrar", tint = palette.textMuted.copy(alpha = 0.82f))
+                        }
                     }
-                }
-                Spacer(modifier = Modifier.height(14.dp))
-                SheetTextField(
+                    Spacer(modifier = Modifier.height(14.dp))
+                    SheetTextField(
                     value = title,
                     onValueChange = {
                         title = it
@@ -244,6 +271,7 @@ internal fun AddEventPanel(
                     placeholder = "p. ej. Reunión de equipo",
                     icon = Icons.Rounded.Event,
                     keyboardType = KeyboardType.Text,
+                    modifier = Modifier.tutorialTarget(TutorialFocusTarget.EDITOR_BASICS)
                 )
                 naturalSuggestion?.let { suggestion ->
                     NaturalSuggestionChip(
@@ -296,6 +324,7 @@ internal fun AddEventPanel(
                     onClick = { advancedVisible = !advancedVisible },
                     modifier = Modifier
                         .fillMaxWidth()
+                        .tutorialTarget(TutorialFocusTarget.EDITOR_MORE_OPTIONS)
                         .padding(bottom = 8.dp)
                 ) {
                     Icon(
@@ -329,7 +358,10 @@ internal fun AddEventPanel(
                             shape = RoundedCornerShape(8.dp),
                             modifier = Modifier.padding(bottom = 12.dp)
                         )
-                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Row(
+                            modifier = Modifier.tutorialTarget(TutorialFocusTarget.EDITOR_ADVANCED),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
                             DatePickerField(
                                 label = "Fecha fin",
                                 date = runCatching { LocalDate.parse(endDateText.trim()) }.getOrNull() ?: parsedStartDate,
@@ -370,7 +402,18 @@ internal fun AddEventPanel(
                             )
                         }
                         if (recurrenceRule == RecurrenceRule.CUSTOM) {
-                            DurationPickerField(
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                FilterChip(selected = customUsesWeekdays, onClick = { customUsesWeekdays = true },
+                                    label = { Text("Días de la semana") })
+                                FilterChip(selected = !customUsesWeekdays, onClick = { customUsesWeekdays = false },
+                                    label = { Text("Cada X días") })
+                            }
+                            if (customUsesWeekdays) {
+                                WeekdaySelector(selected = customWeekDays, onSelected = {
+                                    customWeekDays = it
+                                    hasError = false
+                                })
+                            } else DurationPickerField(
                                 label = "Cada X días",
                                 minutes = customRepeatDaysText.toIntOrNull() ?: 7,
                                 options = listOf(1, 2, 3, 4, 7, 14, 21, 30),
@@ -444,7 +487,7 @@ internal fun AddEventPanel(
                 }
                 if (hasError) {
                     Text(
-                        text = "Revisa título, fechas YYYY-MM-DD, hora HH:mm y duración.",
+                        text = "Revisa el título, las fechas, la hora y la duración.",
                         color = palette.accent,
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp,
@@ -455,18 +498,29 @@ internal fun AddEventPanel(
                     EventEditActions(
                         onDuplicate = { saveCurrent(idOverride = null) },
                         onMoveTomorrow = { saveCurrent(idOverride = id, dayOffset = 1) },
-                        onDelete = { onDelete(id) }
+                        onDelete = {
+                            if (draft.recurrenceRule != RecurrenceRule.NONE) deleteConfirmationVisible = true
+                            else hasError = !onDelete(id, null, RecurrenceDeleteMode.ENTIRE_SERIES)
+                        },
+                        modifier = Modifier.tutorialTarget(TutorialFocusTarget.EDIT_ACTIONS)
                     )
                 }
-                Spacer(modifier = Modifier.height(12.dp))
+                    Spacer(modifier = Modifier.height(12.dp))
+                }
                 Button(
                     onClick = { saveCurrent() },
+                    enabled = canSave,
                     modifier = Modifier
+                        .padding(horizontal = 22.dp, vertical = 14.dp)
                         .fillMaxWidth()
                         .tutorialTarget(TutorialFocusTarget.CREATE_EVENT_BUTTON)
                         .height(50.dp),
                     shape = RoundedCornerShape(8.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = palette.accent)
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = palette.accent,
+                        disabledContainerColor = palette.softLine,
+                        disabledContentColor = palette.textMuted.copy(alpha = 0.82f)
+                    )
                 ) {
                     Text(if (isEditing) "Guardar cambios" else "Crear evento", fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
                 }
@@ -485,17 +539,30 @@ internal fun AddEventPanel(
             onDismiss = { pendingRecurringDraft = null }
         )
     }
+    if (visible && deleteConfirmationVisible && draft?.id != null) {
+        RecurrenceDeleteDialog(
+            date = draft.date,
+            endDate = draft.endDate,
+            onSelected = { mode ->
+                // Use the original tapped occurrence, never unsaved date fields in the editor.
+                hasError = !onDelete(draft.id, draft.date, mode)
+                deleteConfirmationVisible = false
+            },
+            onDismiss = { deleteConfirmationVisible = false }
+        )
+    }
 }
 
 @Composable
 private fun EventEditActions(
     onDuplicate: () -> Unit,
     onMoveTomorrow: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    modifier: Modifier = Modifier
 ) {
     val palette = LocalCalendarPalette.current
 
-    Column(modifier = Modifier.padding(top = 10.dp)) {
+    Column(modifier = modifier.padding(top = 10.dp)) {
         Text(
             text = "Acciones del evento",
             color = palette.textMuted.copy(alpha = 0.72f),
@@ -626,7 +693,7 @@ private fun DatePickerField(
 ) {
     PickerSurfaceField(
         label = label,
-        value = date.toString(),
+        value = formatShortDate(date),
         icon = Icons.Rounded.CalendarMonth,
         onClick = onClick,
         modifier = modifier

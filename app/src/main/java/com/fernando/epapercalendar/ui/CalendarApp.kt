@@ -249,9 +249,12 @@ private fun CalendarHome(calendarState: CalendarState) {
     val context = localContext.applicationContext
     val preferences = remember { context.getSharedPreferences("epaper_calendar", 0) }
     var editorDraft by remember { mutableStateOf<EventDraft?>(null) }
+    var importedEvent by remember { mutableStateOf<CalendarEvent?>(null) }
+    var deviceCalendarsVisible by remember { mutableStateOf(false) }
     var createSheetVisible by remember { mutableStateOf(false) }
+    val editorVisible = createSheetVisible || editorDraft != null
     var searchVisible by remember { mutableStateOf(false) }
-    var payloadPreview by remember { mutableStateOf<String?>(null) }
+    var epaperSetupVisible by remember { mutableStateOf(false) }
     var roboferState by remember { mutableStateOf(RoboferState.Resting) }
     var notificationDialogVisible by remember { mutableStateOf(false) }
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -279,6 +282,12 @@ private fun CalendarHome(calendarState: CalendarState) {
         )
     }
     val activeCalendarState = if (tutorialActive) tutorialCalendarState else calendarState
+    val deviceCalendars = rememberDeviceCalendars(calendarState, enabled = !tutorialActive)
+    LaunchedEffect(importedEvent?.id, deviceCalendars.snapshot, deviceCalendars.permissionGranted) {
+        importedEvent?.let { current ->
+            importedEvent = if (deviceCalendars.permissionGranted) calendarState.events.firstOrNull { it.id == current.id } else null
+        }
+    }
     val activeTheme = if (tutorialActive) tutorialTheme else selectedTheme
     val currentTutorialStep = tutorialSteps.getOrElse(tutorialStepIndex) { tutorialSteps.last() }
     val tutorialTargets = remember { mutableStateMapOf<TutorialFocusTarget, androidx.compose.ui.geometry.Rect>() }
@@ -297,7 +306,6 @@ private fun CalendarHome(calendarState: CalendarState) {
         preferences.edit().putBoolean("welcome_seen", true).apply()
         welcomeVisible = false
         appMenuVisible = false
-        payloadPreview = null
         editorDraft = null
         createSheetVisible = false
         searchVisible = false
@@ -313,7 +321,6 @@ private fun CalendarHome(calendarState: CalendarState) {
         tutorialStepIndex = 0
         appMenuVisible = false
         searchVisible = false
-        payloadPreview = null
         closeEditorSurface()
     }
 
@@ -368,19 +375,7 @@ private fun CalendarHome(calendarState: CalendarState) {
     }
 
     fun createTutorialGymEvent() {
-        val today = LocalDate.now()
-        val draft = EventDraft(
-            id = TUTORIAL_GYM_EVENT_ID,
-            title = "Gym",
-            location = "Gimnasio",
-            date = today.plusDays(1),
-            endDate = today.plusDays(1),
-            startLabel = "18:30",
-            endLabel = "19:30",
-            category = EventCategory.FITNESS,
-            people = "Fer",
-            reminder = ReminderOption.THIRTY_MINUTES
-        )
+        val draft = tutorialGymDraft()
         tutorialCalendarState.saveEvent(draft)
         tutorialCalendarState.selectDate(draft.date)
         createSheetVisible = false
@@ -393,20 +388,37 @@ private fun CalendarHome(calendarState: CalendarState) {
             TutorialFocusTarget.ROBOFER -> openCreateSheet()
             TutorialFocusTarget.ADD_PANEL -> Unit
             TutorialFocusTarget.CREATE_EVENT_BUTTON -> createTutorialGymEvent()
-            TutorialFocusTarget.AGENDA_LIST -> Unit
+            TutorialFocusTarget.AGENDA_LIST -> {
+                editorDraft = tutorialCalendarState.events
+                    .firstOrNull { it.id == TUTORIAL_GYM_EVENT_ID }
+                    ?.toDraft()
+                createSheetVisible = editorDraft != null
+            }
             TutorialFocusTarget.TASKS_TAB -> activeCalendarState.selectSection(AppSection.TASKS)
+            TutorialFocusTarget.TASK_ROW -> {
+                tutorialCalendarState.events
+                    .firstOrNull { it.id == TUTORIAL_TASK_EVENT_ID }
+                    ?.let { tutorialCalendarState.toggleDone(it.id) }
+            }
             TutorialFocusTarget.SEARCH_BUTTON -> {
-                activeCalendarState.selectSection(AppSection.AGENDA)
+                activeCalendarState.selectSection(AppSection.WEEK)
                 searchVisible = true
             }
             TutorialFocusTarget.SEARCH_FIELD -> {
-                activeCalendarState.selectSection(AppSection.AGENDA)
+                activeCalendarState.selectSection(AppSection.WEEK)
                 searchVisible = true
                 activeCalendarState.searchQuery = "gym"
             }
             TutorialFocusTarget.WEEK_TAB -> activeCalendarState.selectSection(AppSection.WEEK)
             TutorialFocusTarget.MONTH_TAB -> activeCalendarState.selectSection(AppSection.CALENDAR)
+            TutorialFocusTarget.EDITOR_MORE_OPTIONS -> Unit
             TutorialFocusTarget.EDIT_PANEL -> Unit
+            TutorialFocusTarget.DATE_STRIP,
+            TutorialFocusTarget.FILTERS,
+            TutorialFocusTarget.EDITOR_BASICS,
+            TutorialFocusTarget.EDITOR_ADVANCED,
+            TutorialFocusTarget.EDIT_ACTIONS,
+            TutorialFocusTarget.TASKS_VIEW,
             TutorialFocusTarget.TOP_MENU -> Unit
             TutorialFocusTarget.WHOLE_APP,
             TutorialFocusTarget.AGENDA_TAB,
@@ -433,10 +445,12 @@ private fun CalendarHome(calendarState: CalendarState) {
         appMenuVisible = false
         createSheetVisible = currentTutorialStep.openCreatePanel
         roboferState = if (currentTutorialStep.openCreatePanel) RoboferState.Active else RoboferState.Resting
-        editorDraft = if (currentTutorialStep.demoAction == TutorialDemoAction.EDIT_READY) {
-            tutorialCalendarState.events.firstOrNull { it.id == TUTORIAL_RECURRING_EVENT_ID }?.toDraft()
-        } else {
-            null
+        editorDraft = when (currentTutorialStep.demoAction) {
+            TutorialDemoAction.CREATE_READY -> tutorialGymDraft(id = null)
+            TutorialDemoAction.EDIT_GYM_READY -> tutorialCalendarState.events
+                .firstOrNull { it.id == TUTORIAL_GYM_EVENT_ID }
+                ?.toDraft()
+            else -> null
         }
     }
 
@@ -485,25 +499,18 @@ private fun CalendarHome(calendarState: CalendarState) {
                         Spacer(modifier = Modifier.height(12.dp))
                     }
 
-                    if (searchVisible) {
-                        SearchField(
-                            query = activeCalendarState.searchQuery,
-                            onQueryChange = { activeCalendarState.searchQuery = it },
-                            onClose = {
-                                activeCalendarState.searchQuery = ""
-                                searchVisible = false
-                            }
+                    if (!tutorialActive && !deviceCalendars.busy && !deviceCalendars.readyForPayload) {
+                        Text(
+                            text = deviceCalendars.status,
+                            color = palette.accent,
+                            modifier = Modifier.fillMaxWidth().clickable { deviceCalendarsVisible = true }.padding(vertical = 8.dp)
                         )
                     }
 
-                    FilterBar(
-                        categoryFilter = activeCalendarState.categoryFilter,
-                        dateFilter = activeCalendarState.dateFilter,
-                        searchVisible = searchVisible,
-                        onCategoryFilterChange = activeCalendarState::updateCategoryFilter,
-                        onDateFilterChange = activeCalendarState::updateDateFilter,
-                        onClear = activeCalendarState::clearFilters
-                    )
+                    CalendarFilters(activeCalendarState, searchVisible) {
+                        activeCalendarState.searchQuery = ""
+                        searchVisible = false
+                    }
 
                     if (activeCalendarState.section != AppSection.WEEK && activeCalendarState.section != AppSection.CALENDAR) {
                         WeekStrip(
@@ -516,26 +523,28 @@ private fun CalendarHome(calendarState: CalendarState) {
                     when (activeCalendarState.section) {
                         AppSection.AGENDA -> AgendaSection(
                             state = activeCalendarState,
-                            onEventClick = { editorDraft = it.toDraft() },
-                            onQuickCreate = ::openCreateFromTemplate
+                            personalContentEnabled = !tutorialActive,
+                            onEventClick = { if (it.isReadOnly) importedEvent = it else editorDraft = it.toDraft() },
+                            onQuickCreate = ::openCreateFromTemplate,
+                            onCreate = ::openCreateSheet
                         )
 
                         AppSection.WEEK -> WeekSection(
                             state = activeCalendarState,
-                            onEventClick = { editorDraft = it.toDraft() },
+                            onImportedEventClick = { importedEvent = it },
                             onQuickCreate = ::openCreateFromTemplate
                         )
 
                         AppSection.TASKS -> TasksSection(
                             state = activeCalendarState,
-                            onEventClick = { editorDraft = it.toDraft() },
+                            onEventClick = { if (it.isReadOnly) importedEvent = it else editorDraft = it.toDraft() },
                             onToggleDone = activeCalendarState::toggleDone,
                             onQuickCreate = ::openCreateFromTemplate
                         )
 
                         AppSection.CALENDAR -> MonthSection(
                             state = activeCalendarState,
-                            onEventClick = { editorDraft = it.toDraft() },
+                            onEventClick = { if (it.isReadOnly) importedEvent = it else editorDraft = it.toDraft() },
                             onQuickCreate = ::openCreateFromTemplate
                         )
                     }
@@ -543,7 +552,7 @@ private fun CalendarHome(calendarState: CalendarState) {
             }
 
             AddEventPanel(
-                visible = createSheetVisible || editorDraft != null,
+                visible = editorVisible,
                 draft = editorDraft,
                 selectedDate = activeCalendarState.selectedDate,
                 onDismiss = {
@@ -569,11 +578,15 @@ private fun CalendarHome(calendarState: CalendarState) {
                     }
                     saved
                 },
-                onDelete = { id ->
-                    activeCalendarState.deleteEvent(id)
-                    editorDraft = null
-                    createSheetVisible = false
+                onDelete = { id, occurrenceDate, mode ->
+                    val deleted = activeCalendarState.deleteEvent(id, occurrenceDate, mode)
+                    if (deleted) {
+                        editorDraft = null
+                        createSheetVisible = false
+                    }
+                    deleted
                 },
+                tutorialRevealAdvanced = tutorialActive && currentTutorialStep.revealAdvancedOptions,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .navigationBarsPadding()
@@ -595,19 +608,32 @@ private fun CalendarHome(calendarState: CalendarState) {
                         preferences.edit().putString("selected_theme", it.name).apply()
                     }
                 },
-                onGeneratePayload = {
-                    payloadPreview = activeCalendarState.generateEpaperPayload()
+                onConfigureEpaper = {
+                    epaperSetupVisible = true
                     appMenuVisible = false
                 },
+                onConfigureCalendars = {
+                    deviceCalendarsVisible = true
+                    appMenuVisible = false
+                },
+                connectionsEnabled = !tutorialActive,
                 onDismiss = { appMenuVisible = false }
             )
         }
 
-        payloadPreview?.let { payload ->
-            PayloadPreviewDialog(
-                payload = payload,
-                onDismiss = { payloadPreview = null }
+        if (epaperSetupVisible && !tutorialActive) {
+            EpaperSetupDialog(
+                state = calendarState,
+                deviceCalendars = deviceCalendars,
+                onDismiss = { epaperSetupVisible = false }
             )
+        }
+
+        if (deviceCalendarsVisible && !tutorialActive) {
+            DeviceCalendarsDialog(deviceCalendars, onDismiss = { deviceCalendarsVisible = false })
+        }
+        if (!tutorialActive) importedEvent?.let { event ->
+            ImportedEventDialog(event, onDismiss = { importedEvent = null })
         }
 
         if (notificationDialogVisible) {
@@ -656,7 +682,22 @@ private fun CalendarHome(calendarState: CalendarState) {
 private const val TUTORIAL_GYM_EVENT_ID = "tutorial-gym-event"
 private const val TUTORIAL_TASK_EVENT_ID = "tutorial-task-event"
 private const val TUTORIAL_VACATION_EVENT_ID = "tutorial-vacation-event"
-private const val TUTORIAL_RECURRING_EVENT_ID = "tutorial-recurring-event"
+
+private fun tutorialGymDraft(id: String? = TUTORIAL_GYM_EVENT_ID): EventDraft {
+    val date = LocalDate.now().plusDays(1)
+    return EventDraft(
+        id = id,
+        title = "Gym",
+        location = "Gimnasio",
+        date = date,
+        endDate = date,
+        startLabel = "18:30",
+        endLabel = "19:30",
+        category = EventCategory.FITNESS,
+        people = "Fer",
+        reminder = ReminderOption.THIRTY_MINUTES
+    )
+}
 
 private fun applyTutorialDemoAction(state: CalendarState, action: TutorialDemoAction?) {
     if (action == null) return
@@ -664,23 +705,10 @@ private fun applyTutorialDemoAction(state: CalendarState, action: TutorialDemoAc
     val today = LocalDate.now()
 
     fun ensureGymEvent() {
-        state.saveEvent(
-            EventDraft(
-                id = TUTORIAL_GYM_EVENT_ID,
-                title = "Gym",
-                location = "Gimnasio",
-                date = today.plusDays(1),
-                endDate = today.plusDays(1),
-                startLabel = "18:30",
-                endLabel = "19:30",
-                category = EventCategory.FITNESS,
-                people = "Fer",
-                reminder = ReminderOption.THIRTY_MINUTES
-            )
-        )
+        state.saveEvent(tutorialGymDraft())
     }
 
-    fun ensureTaskEvent() {
+    fun ensureTaskEvent(done: Boolean = false) {
         state.saveEvent(
             EventDraft(
                 id = TUTORIAL_TASK_EVENT_ID,
@@ -691,7 +719,8 @@ private fun applyTutorialDemoAction(state: CalendarState, action: TutorialDemoAc
                 startLabel = "12:00",
                 endLabel = "12:30",
                 category = EventCategory.TASK,
-                notes = "Tarea temporal del tutorial"
+                notes = "Tarea temporal del tutorial",
+                done = done
             )
         )
     }
@@ -713,26 +742,17 @@ private fun applyTutorialDemoAction(state: CalendarState, action: TutorialDemoAc
         )
     }
 
-    fun ensureRecurringEvent() {
-        state.saveEvent(
-            EventDraft(
-                id = TUTORIAL_RECURRING_EVENT_ID,
-                title = "Stand-up semanal",
-                location = "Meet",
-                date = today.plusDays(1),
-                endDate = today.plusDays(1),
-                startLabel = "09:00",
-                endLabel = "09:30",
-                category = EventCategory.WORK,
-                people = "Equipo producto",
-                recurrenceRule = RecurrenceRule.WEEKLY,
-                reminder = ReminderOption.FIVE_MINUTES
-            )
-        )
-    }
-
     when (action) {
+        TutorialDemoAction.CREATE_READY -> {
+            state.selectDate(today.plusDays(1))
+        }
+
         TutorialDemoAction.EVENT_CREATED -> {
+            ensureGymEvent()
+            state.selectDate(today.plusDays(1))
+        }
+
+        TutorialDemoAction.EDIT_GYM_READY -> {
             ensureGymEvent()
             state.selectDate(today.plusDays(1))
         }
@@ -740,6 +760,12 @@ private fun applyTutorialDemoAction(state: CalendarState, action: TutorialDemoAc
         TutorialDemoAction.TASK_CREATED -> {
             ensureGymEvent()
             ensureTaskEvent()
+            state.selectDate(today)
+        }
+
+        TutorialDemoAction.TASK_COMPLETED -> {
+            ensureGymEvent()
+            ensureTaskEvent(done = true)
             state.selectDate(today)
         }
 
@@ -758,11 +784,6 @@ private fun applyTutorialDemoAction(state: CalendarState, action: TutorialDemoAc
         TutorialDemoAction.MONTH_READY -> {
             ensureVacationEvent()
             state.selectDate(today.plusDays(3))
-        }
-
-        TutorialDemoAction.EDIT_READY -> {
-            ensureRecurringEvent()
-            state.selectDate(today.plusDays(1))
         }
 
         TutorialDemoAction.MENU_READY -> {
@@ -784,8 +805,8 @@ private fun CalendarTopBar(
     var monthMenuExpanded by remember { mutableStateOf(false) }
     val palette = LocalCalendarPalette.current
     val monthName = state.visibleMonth.month
-        .getDisplayName(TextStyle.FULL, Locale.getDefault())
-        .replaceFirstChar { it.titlecase(Locale.getDefault()) }
+        .getDisplayName(TextStyle.FULL, calendarLocale)
+        .replaceFirstChar { it.titlecase(calendarLocale) }
 
     Row(
         modifier = Modifier
@@ -830,8 +851,8 @@ private fun CalendarTopBar(
                     DropdownMenuItem(
                         text = {
                             Text(
-                                month.month.getDisplayName(TextStyle.FULL, Locale.getDefault())
-                                    .replaceFirstChar { it.titlecase(Locale.getDefault()) } +
+                                month.month.getDisplayName(TextStyle.FULL, calendarLocale)
+                                    .replaceFirstChar { it.titlecase(calendarLocale) } +
                                     " ${month.year}"
                             )
                         },
@@ -844,13 +865,15 @@ private fun CalendarTopBar(
             }
         }
         Spacer(modifier = Modifier.weight(1f))
-        RoundIconButton(
-            icon = if (searchVisible) Icons.Rounded.Close else Icons.Rounded.Search,
-            contentDescription = "Buscar",
-            onClick = onSearchToggle,
-            modifier = Modifier.tutorialTarget(TutorialFocusTarget.SEARCH_BUTTON)
-        )
-        Spacer(modifier = Modifier.width(10.dp))
+        if (state.filtersEnabled) {
+            RoundIconButton(
+                icon = if (searchVisible) Icons.Rounded.Close else Icons.Rounded.Search,
+                contentDescription = "Buscar",
+                onClick = onSearchToggle,
+                modifier = Modifier.tutorialTarget(TutorialFocusTarget.SEARCH_BUTTON)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+        }
         Surface(
             shape = CircleShape,
             color = palette.accentSoft.copy(alpha = 0.72f),

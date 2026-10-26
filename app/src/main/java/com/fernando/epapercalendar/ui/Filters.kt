@@ -18,6 +18,7 @@ import androidx.compose.ui.geometry.*
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.*
 import androidx.compose.ui.text.style.*
@@ -81,6 +82,8 @@ internal fun FilterBar(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .testTag("calendar_filters")
+            .tutorialTarget(TutorialFocusTarget.FILTERS)
             .padding(bottom = 14.dp)
     ) {
         Row(
@@ -148,4 +151,14 @@ internal fun FilterBar(
             }
         }
     }
+}
+
+@Composable
+internal fun CalendarFilters(state: CalendarState, searchVisible: Boolean, onSearchClose: () -> Unit) {
+    if (!state.filtersEnabled) return
+    if (searchVisible) {
+        SearchField(state.searchQuery, { state.searchQuery = it }, onSearchClose)
+    }
+    FilterBar(state.categoryFilter, state.dateFilter, searchVisible,
+        state::updateCategoryFilter, state::updateDateFilter, state::clearFilters)
 }

@@ -14,7 +14,7 @@ Salida:
 ## Instalar
 
 ```powershell
-cd C:\Users\ferna\AndroidStudioProjects\EpaperCalendar\foto2ink
+cd foto2ink
 python -m pip install -r requirements.txt
 ```
 
@@ -37,6 +37,33 @@ python foto2ink.py
 7. Ajusta `Dither / detalle` si usas el modo detallado. En `0`, el resultado es igual a `Sticker limpio`; en `100`, aplica el maximo detalle.
 8. Ajusta `Salida cuadrada px` para que coincida exactamente con el layout donde se pintara.
 9. Pulsa `Exportar`.
+
+## Procesar muchas fotos seguidas
+
+1. Pulsa **Procesar varias fotos…** y selecciona todas las imágenes que quieras en el selector de archivos (Ctrl o Mayús para selección múltiple).
+2. Antes de abrir la primera, elige la **carpeta de salida** y el **tamaño inicial**, entre 64 y 240 px; puedes escribir un valor exacto como 124.
+3. Pulsa **Empezar lote**. Verás `Foto 1/N`, el nombre y la carpeta de destino.
+4. Arrastra el recorte, cambia su tamaño y ajusta fondo, modo y detalle como siempre. También puedes cambiar el tamaño de salida de esta foto.
+5. Pulsa **Listo → siguiente** o **Ctrl+Enter**. Se guardan el `.epd` y el `_preview.png` y aparece la siguiente foto, sin diálogo de guardado ni aviso de éxito intermedio.
+6. Repite hasta que aparezca **Lote terminado**. **Saltar foto** omite la actual sin exportarla.
+
+El tamaño de salida, el porcentaje del recorte y los ajustes de conversión se mantienen para la siguiente foto. La posición del recorte vuelve al centro y se adapta a las dimensiones de cada imagen: no reutiliza las coordenadas de la anterior. Solo se carga una foto cada vez, aunque selecciones cientos.
+
+Los nombres conservan el nombre de origen (`viaje.epd` y `viaje_preview.png`). Si cualquiera de los dos ya existe, se añade `_001`, `_002`, etc. Nunca se sobrescriben archivos en el modo por lotes, tampoco originales que coincidan con un nombre de preview. Si falla el guardado, se limpian los nuevos archivos incompletos y la foto sigue pendiente para reintentar o saltar. Una imagen que no se pueda abrir no exporta por error la foto anterior.
+
+**Cerrar lote**, abrir otra foto o cerrar la aplicación pide confirmación si quedan fotos pendientes. Las ya guardadas permanecen; la cola y los ajustes del lote no se recuperan después de cerrar el programa. La carpeta elegida se recuerda solo durante la sesión. `Abrir foto` y `Exportar` conservan el flujo individual.
+
+Esto prepara archivos locales; no los transfiere al ESP32. Para incorporarlos a `Ink_calendar32`, copia los `.epd` a sus recursos y recompila/carga el firmware según su documentación.
+
+## Pruebas sin interfaz
+
+Desde la raíz del repositorio:
+
+```powershell
+python -B -m unittest foto2ink.test_batch_export -v
+```
+
+Cubren cola grande sin cargar imágenes, recortes y ajustes independientes, exportación completa, nombres duplicados, protección de originales, errores/reintentos, doble clic y compatibilidad INK3. No abren ventanas. `-B` evita modificar el `.pyc` histórico rastreado.
 
 ## Consejos
 

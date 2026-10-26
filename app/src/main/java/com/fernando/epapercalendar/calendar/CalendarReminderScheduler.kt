@@ -4,8 +4,8 @@ import android.app.AlarmManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
-import java.time.LocalDate
 import java.time.ZoneId
+import java.time.Instant
 
 class CalendarReminderScheduler(private val context: Context) {
     private val alarmManager = context.getSystemService(AlarmManager::class.java)
@@ -15,6 +15,7 @@ class CalendarReminderScheduler(private val context: Context) {
     }
 
     fun schedule(event: CalendarEvent) {
+        if (event.isReadOnly) return
         cancel(event.id)
         val minutesBefore = event.reminder.minutesBefore ?: return
         val triggerAt = nextTriggerMillis(event, minutesBefore) ?: return
@@ -51,24 +52,7 @@ class CalendarReminderScheduler(private val context: Context) {
     }
 
     private fun nextTriggerMillis(event: CalendarEvent, minutesBefore: Int): Long? {
-        val zoneId = ZoneId.systemDefault()
-        val nowMillis = System.currentTimeMillis()
-        val today = LocalDate.now(zoneId)
-        val candidates = event.occurrencesOverlapping(today.minusDays(1), today.plusYears(2))
-        return candidates
-            .asSequence()
-            .map { occurrence ->
-                val startDateTime = if (event.allDayLike) {
-                    occurrence.startDate.atStartOfDay()
-                } else {
-                    occurrence.startDate.atStartOfDay().plusMinutes(event.startMinutes.toLong())
-                }
-                startDateTime.minusMinutes(minutesBefore.toLong())
-                    .atZone(zoneId)
-                    .toInstant()
-                    .toEpochMilli()
-            }
-            .firstOrNull { it > nowMillis }
+        return nextReminderTriggerMillis(event, minutesBefore, System.currentTimeMillis(), ZoneId.systemDefault())
     }
 
     companion object {
@@ -77,4 +61,17 @@ class CalendarReminderScheduler(private val context: Context) {
         const val EXTRA_TITLE = "extra_title"
         const val EXTRA_TIME = "extra_time"
     }
+}
+
+internal fun nextReminderTriggerMillis(event: CalendarEvent, minutesBefore: Int, nowMillis: Long, zoneId: ZoneId): Long? {
+    if (event.isReadOnly) return null
+    val today = Instant.ofEpochMilli(nowMillis).atZone(zoneId).toLocalDate()
+    return event.occurrencesOverlapping(today.minusDays(1), today.plusYears(2))
+        .asSequence()
+        .map { occurrence ->
+            val startDateTime = if (event.allDayLike) occurrence.startDate.atStartOfDay()
+                else occurrence.startDate.atStartOfDay().plusMinutes(event.startMinutes.toLong())
+            startDateTime.minusMinutes(minutesBefore.toLong()).atZone(zoneId).toInstant().toEpochMilli()
+        }
+        .firstOrNull { it > nowMillis }
 }

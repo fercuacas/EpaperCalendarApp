@@ -24,9 +24,15 @@ import androidx.compose.ui.text.style.*
 import androidx.compose.ui.unit.*
 import com.fernando.epapercalendar.calendar.*
 import java.time.*
+import java.time.format.DateTimeFormatter
 import java.time.format.TextStyle
 import java.util.Locale
 import kotlinx.coroutines.delay
+
+internal val calendarLocale: Locale = Locale.forLanguageTag("es-ES")
+private val shortDateFormatter: DateTimeFormatter = DateTimeFormatter.ofPattern("dd/MM/yyyy", calendarLocale)
+
+internal fun formatShortDate(date: LocalDate): String = date.format(shortDateFormatter)
 
 @Composable
 internal fun WeekStrip(
@@ -35,12 +41,13 @@ internal fun WeekStrip(
     onDateSelected: (LocalDate) -> Unit
 ) {
     val palette = LocalCalendarPalette.current
-    val firstDate = selectedDate.minusDays((selectedDate.dayOfWeek.value % 7).toLong())
+    val firstDate = selectedDate.minusDays((selectedDate.dayOfWeek.value - 1).toLong())
     val dates = (0..6).map { firstDate.plusDays(it.toLong()) }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .tutorialTarget(TutorialFocusTarget.DATE_STRIP)
             .padding(bottom = 20.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
@@ -155,7 +162,9 @@ internal fun UsefulEmptyState(
     title: String,
     subtitle: String,
     actions: List<QuickEventTemplate>,
-    onQuickCreate: (QuickEventTemplate) -> Unit
+    onQuickCreate: (QuickEventTemplate) -> Unit,
+    primaryActionLabel: String? = null,
+    onPrimaryAction: (() -> Unit)? = null
 ) {
     val palette = LocalCalendarPalette.current
 
@@ -175,10 +184,22 @@ internal fun UsefulEmptyState(
         Text(text = title, color = palette.text, fontWeight = FontWeight.ExtraBold, fontSize = 18.sp)
         Text(
             text = subtitle,
-            color = palette.textMuted.copy(alpha = 0.68f),
+            color = palette.textMuted.copy(alpha = 0.82f),
             fontSize = 14.sp,
             textAlign = TextAlign.Center
         )
+        if (primaryActionLabel != null && onPrimaryAction != null) {
+            Spacer(modifier = Modifier.height(14.dp))
+            Button(
+                onClick = onPrimaryAction,
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = palette.accent)
+            ) {
+                Icon(Icons.Rounded.Add, contentDescription = null)
+                Spacer(modifier = Modifier.width(8.dp))
+                Text(primaryActionLabel, fontWeight = FontWeight.Bold)
+            }
+        }
         Spacer(modifier = Modifier.height(14.dp))
         Row(
             modifier = Modifier
@@ -405,7 +426,11 @@ internal fun weekdayShort(dayOfWeek: DayOfWeek): String = when (dayOfWeek) {
     DayOfWeek.SUNDAY -> "DOM"
 }
 
-internal fun greetingForNow(): String = "Buenos días, Fernando"
+internal fun greetingForNow(now: LocalTime = LocalTime.now()): String = when (now.hour) {
+    in 6..11 -> "Buenos días"
+    in 12..19 -> "Buenas tardes"
+    else -> "Buenas noches"
+}
 
 internal fun eventMetaLabel(event: CalendarEvent): String {
     val primary = event.location.ifBlank { event.category.label }
@@ -429,10 +454,10 @@ internal fun eventMetaLabelRich(event: CalendarEvent): String {
 }
 
 internal fun smartDayHeader(date: LocalDate): String {
-    val dayName = date.dayOfWeek.getDisplayName(TextStyle.FULL, Locale.getDefault())
-        .uppercase(Locale.getDefault())
-    val month = date.month.getDisplayName(TextStyle.FULL, Locale.getDefault())
-        .uppercase(Locale.getDefault())
+    val dayName = date.dayOfWeek.getDisplayName(TextStyle.FULL, calendarLocale)
+        .uppercase(calendarLocale)
+    val month = date.month.getDisplayName(TextStyle.FULL, calendarLocale)
+        .uppercase(calendarLocale)
     val dateLabel = "$dayName, ${date.dayOfMonth} $month"
     val today = LocalDate.now()
     return when (date) {
@@ -451,13 +476,5 @@ internal fun EventDraft.hasAdvancedFields(): Boolean {
         notes.isNotBlank() ||
         recurrenceRule != RecurrenceRule.NONE ||
         reminder != ReminderOption.NONE ||
-        customRepeatDays != 7
-}
-
-internal fun weekPartLabel(hour: Int): String {
-    return when (hour) {
-        in 0..11 -> "Mañana"
-        in 12..17 -> "Tarde"
-        else -> "Noche"
-    }
+        customRepeatDays != 7 || customWeekDays.isNotEmpty()
 }

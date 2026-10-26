@@ -1,9 +1,11 @@
 package com.fernando.epapercalendar.calendar
 
 import java.time.LocalDate
+import java.time.DayOfWeek
 import java.time.temporal.ChronoUnit
 import java.text.Normalizer
 import java.util.Locale
+import com.fernando.epapercalendar.calendar.device.DeviceEventSource
 
 data class CalendarEvent(
     val id: String,
@@ -23,8 +25,11 @@ data class CalendarEvent(
     val excludedDates: List<LocalDate> = emptyList(),
     val reminder: ReminderOption = ReminderOption.NONE,
     val done: Boolean = false,
-    val updatedAt: Long = System.currentTimeMillis()
+    val updatedAt: Long = System.currentTimeMillis(),
+    val deviceSource: DeviceEventSource? = null,
+    val customWeekDays: Set<DayOfWeek> = emptySet()
 ) {
+    val isReadOnly: Boolean get() = deviceSource != null
     val startLabel: String = minutesToLabel(startMinutes)
     val endLabel: String = minutesToLabel(endMinutes)
     val spansMultipleDays: Boolean = endDate.isAfter(date)
@@ -57,6 +62,10 @@ data class CalendarEvent(
         if (recurrenceRule == RecurrenceRule.NONE) {
             val single = occurrence(date)
             return if (single.overlaps(rangeStart, rangeEnd)) listOf(single) else emptyList()
+        }
+
+        if (recurrenceRule == RecurrenceRule.CUSTOM && customWeekDays.isNotEmpty()) {
+            return customWeekdayOccurrences(rangeStart, rangeEnd)
         }
 
         val results = mutableListOf<CalendarOccurrence>()
@@ -96,6 +105,27 @@ data class CalendarEvent(
             return hour * 60 + minute
         }
     }
+}
+
+/** Shared with e-paper; payload requests one beyond its cap so overflow is rejected, never hidden. */
+internal fun CalendarEvent.customWeekdayOccurrences(
+    rangeStart: LocalDate,
+    rangeEnd: LocalDate,
+    limit: Int = 520
+): List<CalendarOccurrence> {
+    if (rangeEnd.isBefore(rangeStart) || customWeekDays.isEmpty()) return emptyList()
+    val duration = ChronoUnit.DAYS.between(date, endDate).coerceAtLeast(0)
+    val earliest = maxOf(date, rangeStart.minusDays(duration))
+    var cursor = earliest.plusDays((0L..6L).first { earliest.plusDays(it).dayOfWeek in customWeekDays })
+    val results = mutableListOf<CalendarOccurrence>()
+    // Skip old history directly, retaining inclusive ends and stable occurrence start dates.
+    while (!cursor.isAfter(rangeEnd) && results.size < limit) {
+        if (recurrenceEndDate != null && cursor.isAfter(recurrenceEndDate)) break
+        val occurrence = CalendarOccurrence(this, cursor, cursor.plusDays(duration))
+        if (occurrence.overlaps(rangeStart, rangeEnd) && cursor !in excludedDates) results.add(occurrence)
+        cursor = cursor.plusDays((1L..7L).first { cursor.plusDays(it).dayOfWeek in customWeekDays })
+    }
+    return results
 }
 
 data class CalendarOccurrence(
@@ -152,6 +182,11 @@ enum class RecurrenceEditMode {
     ENTIRE_SERIES
 }
 
+enum class RecurrenceDeleteMode {
+    SINGLE_OCCURRENCE,
+    ENTIRE_SERIES
+}
+
 data class EventDraft(
     val id: String? = null,
     val title: String = "",
@@ -169,7 +204,8 @@ data class EventDraft(
     val recurrenceEndDate: LocalDate? = null,
     val excludedDates: List<LocalDate> = emptyList(),
     val reminder: ReminderOption = ReminderOption.NONE,
-    val done: Boolean = false
+    val done: Boolean = false,
+    val customWeekDays: Set<DayOfWeek> = emptySet()
 )
 
 fun CalendarEvent.toDraft(): EventDraft = EventDraft(
@@ -186,6 +222,7 @@ fun CalendarEvent.toDraft(): EventDraft = EventDraft(
     allDay = allDay,
     recurrenceRule = recurrenceRule,
     customRepeatDays = customRepeatDays,
+    customWeekDays = customWeekDays,
     recurrenceEndDate = recurrenceEndDate,
     excludedDates = excludedDates,
     reminder = reminder,

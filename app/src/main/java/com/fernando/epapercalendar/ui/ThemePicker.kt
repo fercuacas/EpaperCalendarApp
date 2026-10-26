@@ -51,7 +51,9 @@ internal fun AppMenuDialog(
     syncStatus: String,
     onStartTutorial: () -> Unit,
     onThemeSelected: (CalendarThemeOption) -> Unit,
-    onGeneratePayload: () -> Unit,
+    onConfigureEpaper: () -> Unit,
+    onConfigureCalendars: () -> Unit,
+    connectionsEnabled: Boolean = true,
     onDismiss: () -> Unit
 ) {
     val palette = LocalCalendarPalette.current
@@ -86,6 +88,20 @@ internal fun AppMenuDialog(
                     subtitle = "Recorre la app con datos temporales",
                     accent = true,
                     onClick = onStartTutorial
+                )
+
+                MenuSectionTitle(
+                    icon = Icons.Rounded.CalendarMonth,
+                    title = "Calendarios del móvil",
+                    subtitle = "Lee Google y otros calendarios sincronizados en Android"
+                )
+                AppMenuActionCard(
+                    icon = Icons.Rounded.CalendarMonth,
+                    title = "Elegir calendarios",
+                    subtitle = if (connectionsEnabled) "Solo lectura · selección y actualización" else "Disponible fuera del tutorial",
+                    accent = false,
+                    enabled = connectionsEnabled,
+                    onClick = onConfigureCalendars
                 )
 
                 MenuSectionTitle(
@@ -127,14 +143,15 @@ internal fun AppMenuDialog(
                         }
                         Spacer(modifier = Modifier.height(12.dp))
                         Button(
-                            onClick = onGeneratePayload,
+                            onClick = onConfigureEpaper,
+                            enabled = connectionsEnabled,
                             modifier = Modifier.fillMaxWidth(),
                             shape = RoundedCornerShape(8.dp),
                             colors = ButtonDefaults.buttonColors(containerColor = palette.accent)
                         ) {
                             Icon(Icons.Rounded.CalendarMonth, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Generar payload")
+                            Text("Configurar y sincronizar")
                         }
                     }
                 }
@@ -184,6 +201,7 @@ private fun AppMenuActionCard(
     title: String,
     subtitle: String,
     accent: Boolean,
+    enabled: Boolean = true,
     onClick: () -> Unit
 ) {
     val palette = LocalCalendarPalette.current
@@ -196,7 +214,7 @@ private fun AppMenuActionCard(
         modifier = Modifier
             .fillMaxWidth()
             .border(1.dp, borderColor, RoundedCornerShape(8.dp))
-            .clickable(onClick = onClick),
+            .clickable(enabled = enabled, onClick = onClick),
         tonalElevation = 0.dp
     ) {
         Row(

@@ -1,47 +1,45 @@
 package com.fernando.epapercalendar.ui
 
-import androidx.compose.animation.*
-import androidx.compose.animation.core.*
-import androidx.compose.foundation.*
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.*
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.*
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.*
-import androidx.compose.ui.draw.*
-import androidx.compose.ui.geometry.*
-import androidx.compose.ui.graphics.*
-import androidx.compose.ui.graphics.drawscope.DrawScope
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.material.icons.rounded.ViewWeek
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.*
-import androidx.compose.ui.text.style.*
-import androidx.compose.ui.unit.*
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.fernando.epapercalendar.calendar.*
-import java.time.*
+import java.time.LocalDate
 import java.time.format.TextStyle
-import java.util.Locale
-import kotlinx.coroutines.delay
+import java.time.format.DateTimeFormatter
 
 @Composable
 internal fun WeekSection(
     state: CalendarState,
-    onEventClick: (CalendarEvent) -> Unit,
+    onImportedEventClick: (CalendarEvent) -> Unit,
     onQuickCreate: (QuickEventTemplate) -> Unit
 ) {
     val palette = LocalCalendarPalette.current
-    val weekStart = state.selectedDate.minusDays((state.selectedDate.dayOfWeek.value % 7).toLong())
+    val weekStart = state.selectedDate.minusDays((state.selectedDate.dayOfWeek.value - 1).toLong())
     val weekEnd = weekStart.plusDays(6)
     val weekDates = (0..6).map { weekStart.plusDays(it.toLong()) }
     val spanEvents = state.spanOccurrencesInRange(weekStart, weekEnd)
     val eventsByDate = weekDates.associateWith { date -> state.timedEventsFor(date) }
-    val activeHours = (0..23).filter { hour ->
-        eventsByDate.values.any { events -> events.any { it.startMinutes / 60 == hour } }
+    val openDay: (LocalDate) -> Unit = { date ->
+        state.selectDate(date)
+        state.selectSection(AppSection.AGENDA)
     }
 
     Surface(
@@ -57,10 +55,12 @@ internal fun WeekSection(
                 weekStart = weekStart,
                 weekEnd = weekEnd,
                 eventCount = eventsByDate.values.sumOf { it.size },
-                spanCount = spanEvents.size
+                spanCount = spanEvents.size,
+                onPrevious = { state.navigateWeek(-1) },
+                onNext = { state.navigateWeek(1) }
             )
             Spacer(modifier = Modifier.height(12.dp))
-            WeekDaysHeader(weekDates, state.selectedDate, state::selectDate)
+            WeekDaysHeader(weekDates, state.selectedDate, openDay)
             if (spanEvents.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(12.dp))
                 Text(
@@ -73,11 +73,12 @@ internal fun WeekSection(
                 WeekSpanRows(
                     occurrences = spanEvents,
                     weekStart = weekStart,
-                    onEventClick = onEventClick
+                    onImportedEventClick = onImportedEventClick,
+                    onDateSelected = openDay
                 )
             }
             Spacer(modifier = Modifier.height(16.dp))
-            if (activeHours.isEmpty()) {
+            if (eventsByDate.values.all { it.isEmpty() }) {
                 UsefulEmptyState(
                     icon = Icons.Rounded.ViewWeek,
                     title = "Semana libre",
@@ -85,36 +86,14 @@ internal fun WeekSection(
                     actions = quickEventTemplates,
                     onQuickCreate = onQuickCreate
                 )
-            } else {
-                var previousHour: Int? = null
-                var previousPart: String? = null
-                activeHours.forEach { hour ->
-                    val part = weekPartLabel(hour)
-                    if (part != previousPart) {
-                        WeekPartDivider(label = part)
-                        Spacer(modifier = Modifier.height(8.dp))
-                        previousPart = part
-                    }
-                    previousHour?.let { previous ->
-                        if (hour - previous > 1) {
-                            WeekFreeGapRow(startHour = previous + 1, endHour = hour - 1)
-                            Spacer(modifier = Modifier.height(8.dp))
-                        }
-                    }
-                    val maxEvents = weekDates.maxOf { date ->
-                        eventsByDate[date].orEmpty().count { it.startMinutes / 60 == hour }
-                    }
-                    WeekHourRow(
-                        hour = hour,
-                        dates = weekDates,
-                        eventsByDate = eventsByDate,
-                        rowHeight = (maxEvents.coerceAtLeast(1) * 34 + 18).dp,
-                        onEventClick = onEventClick
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    previousHour = hour
-                }
+                Spacer(modifier = Modifier.height(12.dp))
             }
+            WeekTimeline(
+                dates = weekDates,
+                eventsByDate = eventsByDate,
+                onImportedEventClick = onImportedEventClick,
+                onDateSelected = openDay
+            )
         }
     }
 }
@@ -124,35 +103,31 @@ private fun WeekOverviewHeader(
     weekStart: LocalDate,
     weekEnd: LocalDate,
     eventCount: Int,
-    spanCount: Int
+    spanCount: Int,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit
 ) {
     val palette = LocalCalendarPalette.current
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
             .background(palette.surfaceStrong.copy(alpha = 0.5f))
             .border(1.dp, palette.softLine.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(12.dp)
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = "Semana",
-                color = palette.accent,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 13.sp
-            )
-            Text(
-                text = "${weekStart.dayOfMonth} ${weekStart.month.getDisplayName(TextStyle.SHORT, Locale.getDefault())} - ${weekEnd.dayOfMonth} ${weekEnd.month.getDisplayName(TextStyle.SHORT, Locale.getDefault())}",
-                color = palette.text,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 18.sp
-            )
+        val format = DateTimeFormatter.ofPattern("d MMM yyyy", calendarLocale)
+        PeriodNavigation(
+            title = "Semana",
+            subtitle = "${weekStart.format(format)} – ${weekEnd.format(format)}",
+            previousDescription = "Semana anterior", nextDescription = "Semana siguiente",
+            onPrevious = onPrevious, onNext = onNext
+        )
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.Center) {
+            WeekMetric(label = "Horas", value = eventCount.toString())
+            Spacer(modifier = Modifier.width(8.dp))
+            WeekMetric(label = "Largos", value = spanCount.toString())
         }
-        WeekMetric(label = "Horas", value = eventCount.toString())
-        Spacer(modifier = Modifier.width(8.dp))
-        WeekMetric(label = "Largos", value = spanCount.toString())
     }
 }
 
@@ -167,7 +142,7 @@ private fun WeekMetric(label: String, value: String) {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(value, color = palette.text, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
-        Text(label, color = palette.textMuted.copy(alpha = 0.72f), fontWeight = FontWeight.Bold, fontSize = 10.sp)
+        Text(label, color = palette.textMuted.copy(alpha = 0.86f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
     }
 }
 
@@ -195,7 +170,7 @@ internal fun WeekDaysHeader(
                     text = weekdayShort(date.dayOfWeek).take(1),
                     color = if (selected) Color.White else palette.textMuted,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 11.sp
+                    fontSize = 13.sp
                 )
                 Text(
                     text = date.dayOfMonth.toString(),
@@ -212,7 +187,8 @@ internal fun WeekDaysHeader(
 internal fun WeekSpanRows(
     occurrences: List<CalendarOccurrence>,
     weekStart: LocalDate,
-    onEventClick: (CalendarEvent) -> Unit
+    onImportedEventClick: (CalendarEvent) -> Unit,
+    onDateSelected: (LocalDate) -> Unit
 ) {
     val palette = LocalCalendarPalette.current
     BoxWithConstraints(
@@ -235,126 +211,45 @@ internal fun WeekSpanRows(
                     .clip(RoundedCornerShape(8.dp))
                     .background(accent.copy(alpha = 0.18f))
                     .border(1.dp, accent.copy(alpha = 0.32f), RoundedCornerShape(8.dp))
-                    .clickable { onEventClick(occurrence.event) }
+                    .semantics {
+                        contentDescription = occurrence.event.deviceSource?.let {
+                            "${occurrence.event.title}. ${it.calendarName}. Consultar evento de solo lectura"
+                        } ?: "${occurrence.event.title}. Abrir agenda del ${formatShortDate(visibleStart)}"
+                    }
+                    .clickable {
+                        if (occurrence.event.isReadOnly) onImportedEventClick(occurrence.asCalendarEvent())
+                        else onDateSelected(visibleStart)
+                    }
                     .padding(horizontal = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = occurrence.event.title,
-                    color = palette.text,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 11.sp,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
-            }
-        }
-    }
-}
-
-@Composable
-internal fun WeekPartDivider(label: String) {
-    val palette = LocalCalendarPalette.current
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Spacer(modifier = Modifier.width(42.dp))
-        Text(
-            text = label,
-            color = palette.textMuted.copy(alpha = 0.72f),
-            fontWeight = FontWeight.ExtraBold,
-            fontSize = 12.sp
-        )
-        Spacer(modifier = Modifier.width(10.dp))
-        HorizontalDivider(
-            modifier = Modifier.weight(1f),
-            color = palette.softLine.copy(alpha = 0.62f)
-        )
-    }
-}
-
-@Composable
-internal fun WeekFreeGapRow(startHour: Int, endHour: Int) {
-    val palette = LocalCalendarPalette.current
-    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Spacer(modifier = Modifier.width(42.dp))
-        Text(
-            text = if (startHour == endHour) {
-                "Libre hasta las %02d:00".format(endHour + 1)
-            } else {
-                "Libre %02d:00-%02d:00".format(startHour, endHour + 1)
-            },
-            color = palette.textMuted.copy(alpha = 0.58f),
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 11.sp,
-            modifier = Modifier
-                .weight(1f)
-                .clip(RoundedCornerShape(8.dp))
-                .background(palette.surfaceStrong.copy(alpha = 0.34f))
-                .border(1.dp, palette.softLine.copy(alpha = 0.28f), RoundedCornerShape(8.dp))
-                .padding(horizontal = 10.dp, vertical = 7.dp)
-        )
-    }
-}
-
-@Composable
-internal fun WeekHourRow(
-    hour: Int,
-    dates: List<LocalDate>,
-    eventsByDate: Map<LocalDate, List<CalendarEvent>>,
-    rowHeight: Dp,
-    onEventClick: (CalendarEvent) -> Unit
-) {
-    val palette = LocalCalendarPalette.current
-    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-        Text(
-            text = "%02d:00".format(hour),
-            color = palette.textMuted.copy(alpha = 0.72f),
-            fontWeight = FontWeight.Bold,
-            fontSize = 11.sp,
-            modifier = Modifier.width(42.dp)
-        )
-        dates.forEach { date ->
-            val events = eventsByDate[date].orEmpty().filter { it.startMinutes / 60 == hour }
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .height(rowHeight)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(palette.surfaceStrong.copy(alpha = 0.4f))
-                    .border(1.dp, palette.softLine.copy(alpha = 0.35f), RoundedCornerShape(8.dp))
-                    .padding(3.dp),
-                verticalArrangement = Arrangement.spacedBy(3.dp)
-            ) {
-                events.forEach { event ->
-                    val accent = Color(event.category.accentColor)
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(accent.copy(alpha = 0.16f))
-                            .clickable { onEventClick(event) }
-                            .padding(horizontal = 5.dp, vertical = 4.dp)
-                    ) {
+                BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                    val label = (if (occurrence.event.isReadOnly) "↗ " else "") + compactEventLabel(occurrence.event.title)
+                    if (maxWidth >= 22.dp && label.isNotBlank()) {
                         Text(
-                            text = event.title,
+                            text = label,
                             color = palette.text,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 11.sp,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = event.startLabel,
-                            color = palette.textMuted.copy(alpha = 0.72f),
                             fontWeight = FontWeight.Bold,
-                            fontSize = 9.sp,
-                            maxLines = 1
+                            fontSize = 10.sp,
+                            maxLines = 1,
+                            softWrap = false,
+                            overflow = TextOverflow.Clip
                         )
                     }
                 }
             }
         }
     }
+}
+
+internal fun compactEventLabel(title: String): String {
+    val words = title
+        .trim()
+        .split(Regex("[^\\p{L}\\p{N}]+"))
+        .filter { it.isNotBlank() }
+    return when {
+        words.isEmpty() -> ""
+        words.size == 1 -> words.first().take(2)
+        else -> words.take(2).mapNotNull { it.firstOrNull() }.joinToString("")
+    }.uppercase(calendarLocale)
 }

@@ -4,12 +4,24 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.time.LocalDate
+import java.time.DayOfWeek
 import java.util.UUID
 
-class CalendarRepository(context: Context) {
+interface CalendarStore {
+    fun loadEvents(): List<CalendarEvent>
+    fun saveEvents(events: List<CalendarEvent>)
+    fun loadSection(): AppSection
+    fun saveSection(section: AppSection)
+    fun loadCategoryFilter(): EventCategory?
+    fun saveCategoryFilter(category: EventCategory?)
+    fun loadDateFilter(): DateFilter
+    fun saveDateFilter(filter: DateFilter)
+}
+
+class CalendarRepository(context: Context) : CalendarStore {
     private val preferences = context.getSharedPreferences("epaper_calendar", Context.MODE_PRIVATE)
 
-    fun loadEvents(): List<CalendarEvent> {
+    override fun loadEvents(): List<CalendarEvent> {
         val rawEvents = preferences.getString(KEY_EVENTS, null) ?: return defaultEvents()
         return runCatching {
             val array = JSONArray(rawEvents)
@@ -22,9 +34,9 @@ class CalendarRepository(context: Context) {
         }.getOrElse { defaultEvents() }
     }
 
-    fun saveEvents(events: List<CalendarEvent>) {
+    override fun saveEvents(events: List<CalendarEvent>) {
         val array = JSONArray()
-        events.sortedWith(compareBy<CalendarEvent> { it.date }.thenBy { it.startMinutes })
+        events.filterNot { it.isReadOnly }.sortedWith(compareBy<CalendarEvent> { it.date }.thenBy { it.startMinutes })
             .forEach { event -> array.put(event.toJson()) }
         preferences.edit().putString(KEY_EVENTS, array.toString()).apply()
     }
@@ -65,6 +77,11 @@ class CalendarRepository(context: Context) {
             allDay = optBoolean("allDay", false),
             recurrenceRule = recurrenceRule,
             customRepeatDays = optInt("customRepeatDays", 7).coerceAtLeast(1),
+            customWeekDays = optJSONArray("customWeekDays")?.let { days ->
+                (0 until days.length()).mapNotNull { index ->
+                    runCatching { DayOfWeek.of(days.optInt(index)) }.getOrNull()
+                }.toSet()
+            }.orEmpty(),
             recurrenceEndDate = recurrenceEndDate,
             excludedDates = excludedDates,
             reminder = reminder,
@@ -87,6 +104,7 @@ class CalendarRepository(context: Context) {
         .put("allDay", allDay)
         .put("recurrenceRule", recurrenceRule.name)
         .put("customRepeatDays", customRepeatDays)
+        .put("customWeekDays", JSONArray(customWeekDays.map { it.value }.sorted()))
         .put("recurrenceEndDate", recurrenceEndDate?.toString().orEmpty())
         .put("excludedDates", JSONArray().also { array ->
             excludedDates.forEach { array.put(it.toString()) }
@@ -95,34 +113,34 @@ class CalendarRepository(context: Context) {
         .put("done", done)
         .put("updatedAt", updatedAt)
 
-    fun loadSection(): AppSection {
+    override fun loadSection(): AppSection {
         val rawSection = preferences.getString(KEY_SECTION, AppSection.AGENDA.name) ?: AppSection.AGENDA.name
         if (rawSection == "DAY") return AppSection.AGENDA
         return runCatching { AppSection.valueOf(rawSection) }.getOrDefault(AppSection.AGENDA)
     }
 
-    fun saveSection(section: AppSection) {
+    override fun saveSection(section: AppSection) {
         preferences.edit().putString(KEY_SECTION, section.name).apply()
     }
 
-    fun loadCategoryFilter(): EventCategory? {
+    override fun loadCategoryFilter(): EventCategory? {
         val raw = preferences.getString(KEY_CATEGORY_FILTER, null) ?: return null
         return runCatching { EventCategory.valueOf(raw) }.getOrNull()
     }
 
-    fun saveCategoryFilter(category: EventCategory?) {
+    override fun saveCategoryFilter(category: EventCategory?) {
         preferences.edit().apply {
             if (category == null) remove(KEY_CATEGORY_FILTER) else putString(KEY_CATEGORY_FILTER, category.name)
         }.apply()
     }
 
-    fun loadDateFilter(): DateFilter {
+    override fun loadDateFilter(): DateFilter {
         return runCatching {
             DateFilter.valueOf(preferences.getString(KEY_DATE_FILTER, DateFilter.ALL.name) ?: DateFilter.ALL.name)
         }.getOrDefault(DateFilter.ALL)
     }
 
-    fun saveDateFilter(filter: DateFilter) {
+    override fun saveDateFilter(filter: DateFilter) {
         preferences.edit().putString(KEY_DATE_FILTER, filter.name).apply()
     }
 

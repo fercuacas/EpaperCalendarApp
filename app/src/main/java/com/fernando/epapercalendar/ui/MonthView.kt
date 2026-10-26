@@ -50,7 +50,9 @@ internal fun MonthSection(
                 month = state.visibleMonth,
                 selectedDate = state.selectedDate,
                 eventCount = monthEvents.size,
-                longEventCount = monthEvents.count { it.allDayLike }
+                longEventCount = monthEvents.count { it.allDayLike },
+                onPrevious = { state.navigateMonth(-1) },
+                onNext = { state.navigateMonth(1) }
             )
             Spacer(modifier = Modifier.height(14.dp))
             MonthGrid(
@@ -109,36 +111,31 @@ private fun MonthOverviewHeader(
     month: YearMonth,
     selectedDate: LocalDate,
     eventCount: Int,
-    longEventCount: Int
+    longEventCount: Int,
+    onPrevious: () -> Unit,
+    onNext: () -> Unit
 ) {
     val palette = LocalCalendarPalette.current
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(8.dp))
             .background(palette.surfaceStrong.copy(alpha = 0.5f))
             .border(1.dp, palette.softLine.copy(alpha = 0.45f), RoundedCornerShape(8.dp))
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .padding(12.dp)
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                text = month.month.getDisplayName(TextStyle.FULL, Locale.getDefault())
-                    .replaceFirstChar { it.titlecase(Locale.getDefault()) },
-                color = palette.text,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 20.sp
-            )
-            Text(
-                text = "Seleccionado: ${selectedDate.dayOfMonth}/${selectedDate.monthValue}",
-                color = palette.textMuted.copy(alpha = 0.72f),
-                fontWeight = FontWeight.Bold,
-                fontSize = 12.sp
-            )
+        PeriodNavigation(
+            title = month.month.getDisplayName(TextStyle.FULL, calendarLocale)
+                .replaceFirstChar { it.titlecase(calendarLocale) } + " ${month.year}",
+            subtitle = "Seleccionado: ${selectedDate.dayOfMonth}/${selectedDate.monthValue}",
+            previousDescription = "Mes anterior", nextDescription = "Mes siguiente",
+            onPrevious = onPrevious, onNext = onNext
+        )
+        Row(Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.Center) {
+            MonthMetric(label = "Eventos", value = eventCount.toString())
+            Spacer(modifier = Modifier.width(8.dp))
+            MonthMetric(label = "Varios días", value = longEventCount.toString())
         }
-        MonthMetric(label = "Eventos", value = eventCount.toString())
-        Spacer(modifier = Modifier.width(8.dp))
-        MonthMetric(label = "Rangos", value = longEventCount.toString())
     }
 }
 
@@ -153,7 +150,7 @@ private fun MonthMetric(label: String, value: String) {
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Text(value, color = palette.text, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp)
-        Text(label, color = palette.textMuted.copy(alpha = 0.72f), fontWeight = FontWeight.Bold, fontSize = 10.sp)
+        Text(label, color = palette.textMuted.copy(alpha = 0.86f), fontWeight = FontWeight.Bold, fontSize = 12.sp)
     }
 }
 
@@ -203,6 +200,7 @@ private fun MonthRangeSummary(
                             fontSize = 12.sp
                         )
                     }
+                    ImportedCalendarLabel(event)
                     Spacer(modifier = Modifier.height(8.dp))
                     Box(
                         modifier = Modifier
@@ -243,7 +241,7 @@ internal fun MonthGrid(
 ) {
     val palette = LocalCalendarPalette.current
     val firstDay = month.atDay(1)
-    val leadingEmptyDays = firstDay.dayOfWeek.value % 7
+    val leadingEmptyDays = firstDay.dayOfWeek.value - 1
     val daysInMonth = month.lengthOfMonth()
     val totalCells = 42
     val cells = (0 until totalCells).map { cellIndex ->
@@ -253,12 +251,12 @@ internal fun MonthGrid(
 
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Row(modifier = Modifier.fillMaxWidth()) {
-            listOf("D", "L", "M", "X", "J", "V", "S").forEach { label ->
+            listOf("L", "M", "X", "J", "V", "S", "D").forEach { label ->
                 Text(
                     text = label,
-                    color = palette.textMuted.copy(alpha = 0.56f),
+                    color = palette.textMuted.copy(alpha = 0.78f),
                     fontWeight = FontWeight.ExtraBold,
-                    fontSize = 12.sp,
+                    fontSize = 13.sp,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.weight(1f)
                 )

@@ -4,21 +4,32 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import org.json.JSONArray
-import org.json.JSONObject
+import com.fernando.epapercalendar.epaper.EpaperPayloadBuilder
+import com.fernando.epapercalendar.epaper.EpaperPayloadResult
 import java.time.LocalDate
 import java.time.YearMonth
-import java.time.ZoneId
-import java.time.ZonedDateTime
 import java.util.UUID
 
 class CalendarState(
-    private val repository: CalendarRepository,
+    private val repository: CalendarStore,
     private val reminderScheduler: CalendarReminderScheduler? = null,
     initialEvents: List<CalendarEvent>? = null,
     private val persistChanges: Boolean = true
 ) {
     private val eventItems = mutableStateListOf<CalendarEvent>()
+    private val importedItems = mutableStateListOf<CalendarEvent>()
+    private var importsReadyForPayload = true
+
+    fun replaceImportedEvents(events: List<CalendarEvent>) {
+        if (!persistChanges) return // The tutorial can never receive real device events.
+        require(events.all { it.isReadOnly })
+        importedItems.clear()
+        importedItems.addAll(events.distinctBy { it.id })
+    }
+
+    fun setImportsReadyForPayload(ready: Boolean) {
+        importsReadyForPayload = ready
+    }
 
     var selectedDate by mutableStateOf(LocalDate.now())
         private set
@@ -40,8 +51,11 @@ class CalendarState(
     var syncStatus by mutableStateOf("Listo para preparar el envío")
         private set
 
+    val filtersEnabled: Boolean
+        get() = section == AppSection.WEEK || section == AppSection.CALENDAR
+
     val events: List<CalendarEvent>
-        get() = eventItems
+        get() = eventItems + importedItems
 
     init {
         eventItems.addAll(initialEvents ?: repository.loadEvents())
@@ -59,6 +73,16 @@ class CalendarState(
     fun selectDate(date: LocalDate) {
         selectedDate = date
         visibleMonth = YearMonth.from(date)
+    }
+
+    fun navigateWeek(direction: Int) {
+        require(direction == -1 || direction == 1)
+        selectDate(selectedDate.plusWeeks(direction.toLong()))
+    }
+
+    fun navigateMonth(direction: Int) {
+        require(direction == -1 || direction == 1)
+        selectDate(selectedDate.plusMonths(direction.toLong()))
     }
 
     fun updateCategoryFilter(category: EventCategory?) {
@@ -105,7 +129,7 @@ class CalendarState(
         .distinctBy { it.event.id }
         .size
 
-    fun upcomingEvents(limit: Int = 8): List<CalendarEvent> = eventItems
+    fun upcomingEvents(limit: Int = 8): List<CalendarEvent> = events
         .flatMap { it.occurrencesOverlapping(selectedDate, selectedDate.plusMonths(6)) }
         .filter { it.matchesFilters() }
         .sortedWith(compareBy<CalendarOccurrence> { it.startDate }.thenBy { it.event.startMinutes })
@@ -113,7 +137,7 @@ class CalendarState(
         .distinctBy { it.id }
         .take(limit)
 
-    fun monthEvents(): List<CalendarEvent> = eventItems
+    fun monthEvents(): List<CalendarEvent> = events
         .filter { event ->
             event.occurrencesOverlapping(visibleMonth.atDay(1), visibleMonth.atEndOfMonth())
                 .any { it.matchesFilters() }
@@ -125,7 +149,7 @@ class CalendarState(
         .sortedWith(compareBy<CalendarEvent> { it.done }.thenBy { it.date }.thenBy { it.startMinutes })
 
     fun occurrencesInRange(start: LocalDate, end: LocalDate): List<CalendarOccurrence> {
-        return eventItems
+        return events
             .flatMap { it.occurrencesOverlapping(start, end) }
             .filter { it.matchesFilters() }
             .sortedWith(compareBy<CalendarOccurrence> { it.startDate }.thenBy { it.event.startMinutes })
@@ -138,6 +162,7 @@ class CalendarState(
     }
 
     fun saveEvent(draft: EventDraft): Boolean {
+        if (draft.id?.startsWith("device:") == true || importedItems.any { it.id == draft.id }) return false
         val startMinutes = if (draft.allDay) 0 else CalendarEvent.labelToMinutes(draft.startLabel) ?: return false
         val endMinutes = if (draft.allDay) 23 * 60 + 59 else CalendarEvent.labelToMinutes(draft.endLabel) ?: return false
         if (draft.title.isBlank()) return false
@@ -158,6 +183,7 @@ class CalendarState(
             allDay = draft.allDay,
             recurrenceRule = draft.recurrenceRule,
             customRepeatDays = draft.customRepeatDays.coerceAtLeast(1),
+            customWeekDays = if (draft.recurrenceRule == RecurrenceRule.CUSTOM) draft.customWeekDays.toSet() else emptySet(),
             recurrenceEndDate = draft.recurrenceEndDate,
             excludedDates = draft.excludedDates.distinct().sorted(),
             reminder = draft.reminder,
@@ -177,6 +203,7 @@ class CalendarState(
     }
 
     fun saveRecurringEdit(draft: EventDraft, mode: RecurrenceEditMode): Boolean {
+        if (draft.id?.startsWith("device:") == true || importedItems.any { it.id == draft.id }) return false
         val originalId = draft.id ?: return saveEvent(draft)
         val originalIndex = eventItems.indexOfFirst { it.id == originalId }
         if (originalIndex < 0) return saveEvent(draft)
@@ -233,13 +260,33 @@ class CalendarState(
         return true
     }
 
-    fun deleteEvent(id: String) {
-        eventItems.removeAll { it.id == id }
+    fun deleteEvent(
+        id: String,
+        occurrenceDate: LocalDate? = null,
+        mode: RecurrenceDeleteMode = RecurrenceDeleteMode.ENTIRE_SERIES
+    ): Boolean {
+        if (id.startsWith("device:") || importedItems.any { it.id == id }) return false
+        val index = eventItems.indexOfFirst { it.id == id }
+        if (index < 0) return false
+        val event = eventItems[index]
+        if (mode == RecurrenceDeleteMode.SINGLE_OCCURRENCE && event.recurrenceRule != RecurrenceRule.NONE) {
+            val date = occurrenceDate ?: return false
+            if (event.occurrencesOverlapping(date, date).none { it.startDate == date }) return false
+            val updated = event.copy(excludedDates = (event.excludedDates + date).distinct().sorted(),
+                updatedAt = System.currentTimeMillis())
+            eventItems[index] = updated
+            persist()
+            reminderScheduler?.schedule(updated)
+            return true
+        }
+        eventItems.removeAt(index)
         persist()
         reminderScheduler?.cancel(id)
+        return true
     }
 
     fun toggleDone(id: String) {
+        if (id.startsWith("device:") || importedItems.any { it.id == id }) return
         val index = eventItems.indexOfFirst { it.id == id }
         if (index < 0) return
         val event = eventItems[index]
@@ -247,35 +294,17 @@ class CalendarState(
         persist()
     }
 
-    fun generateEpaperPayload(): String {
-        val zoneId = ZoneId.systemDefault()
-        val array = JSONArray()
-        upcomingEvents(limit = 12).forEach { event ->
-            array.put(
-                JSONObject()
-                    .put("title", event.title)
-                    .put("date", event.date.toString())
-                    .put("endDate", event.endDate.toString())
-                    .put("start", event.startLabel)
-                    .put("end", event.endLabel)
-                    .put("allDay", event.allDay)
-                    .put("recurrence", event.recurrenceRule.name)
-                    .put("reminder", event.reminder.name)
-                    .put("category", event.category.name)
-                    .put("people", event.people)
-            )
-        }
+    fun buildEpaperPayload(): EpaperPayloadResult {
+        check(importsReadyForPayload) { "Actualiza los calendarios del móvil antes de preparar el envío." }
+        val result = EpaperPayloadBuilder.build(events, selectedDate)
+        syncStatus = "${result.occurrenceCount} apariciones · ${result.byteCount} bytes"
+        return result
+    }
 
-        val payload = JSONObject()
-            .put("deviceView", "MONTH_WITH_TODAY_EVENTS")
-            .put("generatedAt", ZonedDateTime.now(zoneId).toString())
-            .put("timezone", zoneId.id)
-            .put("currentDate", selectedDate.toString())
-            .put("events", array)
-            .toString(2)
+    fun generateEpaperPayload(): String = buildEpaperPayload().json
 
-        syncStatus = "Payload generado para ${array.length()} eventos"
-        return payload
+    fun updateSyncStatus(status: String) {
+        syncStatus = status
     }
 
     private fun persist() {
@@ -299,6 +328,7 @@ class CalendarState(
             allDay = draft.allDay,
             recurrenceRule = draft.recurrenceRule,
             customRepeatDays = draft.customRepeatDays.coerceAtLeast(1),
+            customWeekDays = if (draft.recurrenceRule == RecurrenceRule.CUSTOM) draft.customWeekDays.toSet() else emptySet(),
             recurrenceEndDate = draft.recurrenceEndDate,
             excludedDates = draft.excludedDates.distinct().sorted(),
             reminder = draft.reminder,
@@ -308,12 +338,14 @@ class CalendarState(
     }
 
     private fun CalendarEvent.matchesFilters(): Boolean {
+        if (!filtersEnabled) return true
         return matches(searchQuery) &&
             (categoryFilter == null || category == categoryFilter) &&
             matchesDateFilter(dateFilter)
     }
 
     private fun CalendarOccurrence.matchesFilters(): Boolean {
+        if (!filtersEnabled) return true
         return event.matches(searchQuery) &&
             (categoryFilter == null || event.category == categoryFilter) &&
             matchesDateFilter(dateFilter)
@@ -321,7 +353,7 @@ class CalendarState(
 
     private fun CalendarEvent.matchesDateFilter(filter: DateFilter): Boolean {
         val today = LocalDate.now()
-        val weekStart = today.minusDays((today.dayOfWeek.value % 7).toLong())
+        val weekStart = today.minusDays((today.dayOfWeek.value - 1).toLong())
         val weekEnd = weekStart.plusDays(6)
         return when (filter) {
             DateFilter.ALL -> true
@@ -332,7 +364,7 @@ class CalendarState(
 
     private fun CalendarOccurrence.matchesDateFilter(filter: DateFilter): Boolean {
         val today = LocalDate.now()
-        val weekStart = today.minusDays((today.dayOfWeek.value % 7).toLong())
+        val weekStart = today.minusDays((today.dayOfWeek.value - 1).toLong())
         val weekEnd = weekStart.plusDays(6)
         return when (filter) {
             DateFilter.ALL -> true

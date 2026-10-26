@@ -154,9 +154,13 @@ internal fun RoboferButton(
         modifier = modifier
             .scale(scale)
             .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center
+        contentAlignment = Alignment.TopCenter
     ) {
-        Canvas(modifier = Modifier.fillMaxSize()) {
+        Canvas(
+            modifier = Modifier
+                .size(width = 72.dp, height = 60.dp)
+                .align(Alignment.TopCenter)
+        ) {
             drawRoboferBase(wakeProgress, palette)
             drawRoboferMotion(alivePulse, wakeProgress * (1f - successProgress), palette)
             drawRoboferPlus(
@@ -171,6 +175,15 @@ internal fun RoboferButton(
             drawRoboferSuccess(successProgress, palette)
             drawRoboferStars(successProgress, palette)
         }
+        Text(
+            text = "Crear",
+            color = palette.textMuted.copy(alpha = 0.86f),
+            fontWeight = FontWeight.Bold,
+            fontSize = 12.sp,
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 4.dp)
+        )
     }
 }
 
